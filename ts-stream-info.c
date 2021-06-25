@@ -89,12 +89,40 @@ void pes_data_analyze_video_13818(PESData *pes, TsStreamInfo *tsi)
                 PESFrameInfo frame_info = {
                     .frame_number = tsi->iframe_count++,
                     .stream_offset = pes->packet_start,
+                    .pts = pes->pts,
                     .dts = pes->dts,
-                    .pts = pes->pts
+                    .pidtype = PID_TYPE_VIDEO_13818
                 };
                 g_array_append_val(tsi->frame_infos, frame_info);
                 break;
             }
+        }
+
+        ++data;
+        --bytes_left;
+    }
+}
+
+void pes_data_analyze_video_14496(PESData *pes, TsStreamInfo *tsi)
+{
+    if (!pes->have_start)
+        return;
+
+    size_t bytes_left = pes->data->len;
+    uint8_t *data = pes->data->data;
+
+    while (bytes_left > 3) {
+        if (data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01 && (data[3] & 0x1f) == 5) {
+            /* IDR image start */
+            PESFrameInfo frame_info = {
+                .frame_number = tsi->iframe_count++,
+                .stream_offset = pes->packet_start,
+                .pts = pes->pts,
+                .dts = pes->dts,
+                .pidtype = PID_TYPE_VIDEO_14496
+            };
+            g_array_append_val(tsi->frame_infos, frame_info);
+            break;
         }
 
         ++data;
@@ -162,9 +190,12 @@ static bool tsi_handle_packet(PidInfo *pidinfo, const uint8_t *packet, const siz
         return true;
 
     if (pidinfo->type == PID_TYPE_VIDEO_13818) {
-        /* Most of this is the same for all pes packets. */
         _tsi_handle_pes(pidinfo, tsi->analyzer_client_id, packet, offset,
                 (PESFinishedFunc)pes_data_analyze_video_13818, tsi);
+    }
+    else if (pidinfo->type == PID_TYPE_VIDEO_14496) {
+        _tsi_handle_pes(pidinfo, tsi->analyzer_client_id, packet, offset,
+                (PESFinishedFunc)pes_data_analyze_video_14496, tsi);
     }
 
     return true;
@@ -259,6 +290,15 @@ guint32 ts_stream_info_get_iframe_count(TsStreamInfo *tsi)
     return tsi->iframe_count;
 }
 
+bool ts_stream_info_get_iframe_info(TsStreamInfo *tsi, PESFrameInfo *frame_info, guint32 frame_id)
+{
+    if (!tsi || tsi->iframe_count <= frame_id)
+        return false;
+    if (frame_info)
+        *frame_info = g_array_index(tsi->frame_infos, PESFrameInfo, frame_id);
+    return true;
+}
+
 struct FindIFrameInfo {
     TsStreamInfo *tsi;
     gboolean package_found;
@@ -280,7 +320,7 @@ static bool _ts_get_iframe_handle_packet(PidInfo *pidinfo, const uint8_t *packet
     if (!pidinfo || !fifi)
         return false;
 
-    if (pidinfo->type == PID_TYPE_VIDEO_13818) {
+    if (pidinfo->type == PID_TYPE_VIDEO_13818 || pidinfo->type == PID_TYPE_VIDEO_14496) {
         _tsi_handle_pes(pidinfo, fifi->tsi->random_access_client_id, packet, offset,
                 (PESFinishedFunc)_ts_get_iframe_handle_pes, fifi);
         if (fifi->package_found) {

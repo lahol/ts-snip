@@ -1,8 +1,8 @@
 CC = gcc
 LD = gcc
 PKG_CONFIG = pkg-config
-CFLAGS += -Wall -D_FILE_OFFSET_BITS=64 `$(PKG_CONFIG) --cflags glib-2.0`
-LIBS += -ldvbpsi -ltsanalyze `$(PKG_CONFIG) --libs glib-2.0`
+CFLAGS += -Wall -D_FILE_OFFSET_BITS=64 `$(PKG_CONFIG) --cflags glib-2.0 libavcodec`
+LIBS += -ldvbpsi -ltsanalyze `$(PKG_CONFIG) --libs glib-2.0 libavcodec libavutil`
 RM ?= rm
 
 PREFIX := /usr
