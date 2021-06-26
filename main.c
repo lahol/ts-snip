@@ -258,6 +258,7 @@ int main(int argc, char **argv)
 
     main_init_window();
 
+    ts_snipper_analyze(app.tsn);
     guint32 iframe_count = ts_snipper_get_iframe_count(app.tsn);
     gtk_adjustment_configure(GTK_ADJUSTMENT(app.adjust_stream_pos),
                              0.0, /* value */

@@ -47,3 +47,8 @@ typedef gboolean (*TsSnipperWriteFunc)(guint8 *, gsize, gpointer);
 
 /** Write filtered output to buffer and call writer.*/
 gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer userdata);
+
+gboolean ts_snipper_get_analyze_status(TsSnipper *tsn, gsize *bytes_read, gsize *bytes_total);
+gboolean ts_snipper_get_write_status(TsSnipper *tsn, gsize *bytes_read, gsize *bytes_total);
+
+void ts_snipper_analyze(TsSnipper *tsn);
