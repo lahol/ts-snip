@@ -38,7 +38,7 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
 
 /** Find a slice containing the given frame id.
  */
-guint32 ts_snipper_find_slice_for_frame(TsSnipper *tsn, TsSlice *slice, guint32 frame_id);
+guint32 ts_snipper_find_slice_for_frame(TsSnipper *tsn, TsSlice *slice, guint32 frame_id, gboolean include_end);
 
 void ts_snipper_delete_slice(TsSnipper *tsn, guint64 id);
 

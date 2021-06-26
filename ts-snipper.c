@@ -531,7 +531,12 @@ static gint _ts_snipper_slice_compare_frame_in_range(TsSlice *slice, guint32 fra
     return (slice->begin_frame <= frame_id && frame_id < slice->end_frame) ? 0 : 1;
 }
 
-guint32 ts_snipper_find_slice_for_frame(TsSnipper *tsn, TsSlice *slice, guint32 frame_id)
+static gint _ts_snipper_slice_compare_frame_in_range_inclusive(TsSlice *slice, guint32 frame_id)
+{
+    return (slice->begin_frame <= frame_id && frame_id <= slice->end_frame) ? 0 : 1;
+}
+
+guint32 ts_snipper_find_slice_for_frame(TsSnipper *tsn, TsSlice *slice, guint32 frame_id, gboolean include_end)
 {
     guint32 slice_id = TS_SLICE_ID_INVALID;
     g_return_val_if_fail(tsn != NULL, slice_id);
@@ -539,7 +544,9 @@ guint32 ts_snipper_find_slice_for_frame(TsSnipper *tsn, TsSlice *slice, guint32 
     GList *slice_link = g_list_find_custom(
                              tsn->out.slices,
                              GUINT_TO_POINTER(frame_id),
-                             (GCompareFunc)_ts_snipper_slice_compare_frame_in_range);
+                             include_end
+                                ? (GCompareFunc)_ts_snipper_slice_compare_frame_in_range_inclusive
+                                : (GCompareFunc)_ts_snipper_slice_compare_frame_in_range);
     if (slice_link) {
         if (slice) *slice = *((TsSlice *)slice_link->data);
         slice_id = ((TsSlice *)slice_link->data)->id;

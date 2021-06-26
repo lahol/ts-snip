@@ -30,11 +30,12 @@ static gboolean write_stream_cb(guint8 *buffer, gsize bufsiz, FILE *f)
 
 #define SNIPPER_ACTIVE_SLICE_BEGIN (1 << 0)
 #define SNIPPER_ACTIVE_SLICE_END (1 << 1)
+#define SNIPPER_MOTION_SLICE_VALID (1 << 2)
 typedef struct {
     guint32 flags;
     guint32 frame_begin;
     guint32 frame_end;
-} SnipperActiveSlice;
+} SnipperSlice;
 
 struct TsSnipApp {
     TsSnipper *tsn;
@@ -53,7 +54,8 @@ struct TsSnipApp {
     GMutex frame_lock;
     GMutex snipper_lock;
 
-    SnipperActiveSlice active_slice;
+    SnipperSlice active_slice;
+    SnipperSlice motion_slice;
 } app;
 
 static void rebuild_surface(void);
@@ -301,6 +303,12 @@ static void rebuild_surface(void)
 static void main_adjustment_value_changed(GtkAdjustment *adjustment, gpointer nil)
 {
     app.frame_id = (guint32)gtk_adjustment_get_value(adjustment);
+    if (app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID) {
+        if (app.frame_id >= app.motion_slice.frame_end ||
+            app.frame_id < app.motion_slice.frame_begin) {
+            app.motion_slice.flags &= ~SNIPPER_MOTION_SLICE_VALID;
+        }
+    }
     rebuild_surface();
 }
 
@@ -373,10 +381,42 @@ static void main_menu_edit_slice_end(void)
 
 static void main_menu_edit_slice_remove(void)
 {
-    guint32 slice_id = ts_snipper_find_slice_for_frame(app.tsn, NULL, app.frame_id);
+    guint32 slice_id = ts_snipper_find_slice_for_frame(app.tsn, NULL, app.frame_id, FALSE);
     if (slice_id != TS_SLICE_ID_INVALID) {
         ts_snipper_delete_slice(app.tsn, slice_id);
         main_slider_refresh_slice_markers();
+    }
+}
+
+static void main_menu_edit_slice_select_begin(void)
+{
+    if (!(app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID)) {
+        TsSlice slice;
+        if (ts_snipper_find_slice_for_frame(app.tsn, &slice, app.frame_id, TRUE) != TS_SLICE_ID_INVALID) {
+            app.motion_slice.frame_begin = slice.begin_frame;
+            app.motion_slice.frame_end = slice.end_frame;
+            app.motion_slice.flags |= SNIPPER_MOTION_SLICE_VALID;
+        }
+    }
+
+    if (app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID) {
+        gtk_adjustment_set_value(GTK_ADJUSTMENT(app.adjust_stream_pos), (gdouble)app.motion_slice.frame_begin);
+    }
+}
+
+static void main_menu_edit_slice_select_end(void)
+{
+    if (!(app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID)) {
+        TsSlice slice;
+        if (ts_snipper_find_slice_for_frame(app.tsn, &slice, app.frame_id, TRUE) != TS_SLICE_ID_INVALID) {
+            app.motion_slice.frame_begin = slice.begin_frame;
+            app.motion_slice.frame_end = slice.end_frame;
+            app.motion_slice.flags |= SNIPPER_MOTION_SLICE_VALID;
+        }
+    }
+
+    if (app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID) {
+        gtk_adjustment_set_value(GTK_ADJUSTMENT(app.adjust_stream_pos), (gdouble)app.motion_slice.frame_end);
     }
 }
 
@@ -446,6 +486,20 @@ GtkWidget *main_create_main_menu(void)
             G_CALLBACK(main_menu_edit_slice_remove), NULL);
     _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_k,
             GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_edit_slice_remove), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label(_("Select slice begin"));
+    g_signal_connect_swapped(G_OBJECT(item), "activate",
+            G_CALLBACK(main_menu_edit_slice_select_begin), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_Left,
+            GDK_SHIFT_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_edit_slice_select_begin), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label(_("Select slice end"));
+    g_signal_connect_swapped(G_OBJECT(item), "activate",
+            G_CALLBACK(main_menu_edit_slice_select_end), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_Right,
+            GDK_SHIFT_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_edit_slice_select_end), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
     item = gtk_menu_item_new_with_label(_("Edit"));
