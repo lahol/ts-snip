@@ -8,7 +8,6 @@
 
 #include "ts-snipper.h"
 
-#if 0
 static gboolean write_stream_cb(guint8 *buffer, gsize bufsiz, FILE *f)
 {
     gsize bytes_written;
@@ -26,7 +25,6 @@ static gboolean write_stream_cb(guint8 *buffer, gsize bufsiz, FILE *f)
     }
     return TRUE;
 }
-#endif
 
 #define SNIPPER_ACTIVE_SLICE_BEGIN (1 << 0)
 #define SNIPPER_ACTIVE_SLICE_END (1 << 1)
@@ -320,6 +318,38 @@ void main_menu_file_open(void)
 void main_menu_file_save_as(void)
 {
     fprintf(stderr, "File > Save As\n");
+    GtkWidget *dialog;
+    gint res;
+    dialog = gtk_file_chooser_dialog_new(_("Save As"),
+            GTK_WINDOW(app.main_window),
+            GTK_FILE_CHOOSER_ACTION_SAVE,
+            _("_Cancel"),
+            GTK_RESPONSE_CANCEL,
+            _("_Save"),
+            GTK_RESPONSE_ACCEPT,
+            NULL);
+
+    gtk_file_chooser_set_do_overwrite_confirmation(
+            GTK_FILE_CHOOSER(dialog), TRUE);
+    res = gtk_dialog_run(GTK_DIALOG(dialog));
+    fprintf(stderr, "ran dialog\n");
+    if (res == GTK_RESPONSE_ACCEPT) {
+        char *filename;
+
+        filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+    fprintf(stderr, "write to %s\n", filename);
+
+    /* TODO make this async */
+        FILE *out;
+        if ((out = fopen(filename, "wb")) != NULL) {
+            ts_snipper_write(app.tsn, (TsSnipperWriteFunc)write_stream_cb, out);
+            fclose(out);
+        }
+        g_free(filename);
+        fprintf(stderr, "Done\n");
+    }
+
+    gtk_widget_destroy(dialog);
 }
 
 void main_menu_file_quit(void)
