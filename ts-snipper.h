@@ -52,3 +52,12 @@ gboolean ts_snipper_get_analyze_status(TsSnipper *tsn, gsize *bytes_read, gsize 
 gboolean ts_snipper_get_write_status(TsSnipper *tsn, gsize *bytes_read, gsize *bytes_total);
 
 void ts_snipper_analyze(TsSnipper *tsn);
+
+typedef enum {
+    TsSnipperStateUnknown = 0,
+    TsSnipperStateInitialized = 1,
+    TsSnipperStateAnalyzing = 2,
+    TsSnipperStateReady = 3
+} TsSnipperState;
+
+TsSnipperState ts_snipper_get_state(TsSnipper *tsn);

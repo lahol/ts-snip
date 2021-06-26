@@ -37,6 +37,7 @@ struct _TsSnipper {
     PidInfoManager *pmgr;
     uint32_t analyzer_client_id;
     uint32_t random_access_client_id;
+    TsSnipperState state;
 
     FILE *file;
     gsize file_size;
@@ -306,6 +307,8 @@ void tsn_analyze_file(TsSnipper *tsn)
     if (!tsn->file)
         return;
 
+    tsn->state = TsSnipperStateAnalyzing;
+
     static TsAnalyzerClass tscls = {
         .handle_packet = (TsHandlePacketFunc)tsn_handle_packet,
     };
@@ -320,6 +323,8 @@ void tsn_analyze_file(TsSnipper *tsn)
                       NULL);
 
     ts_analyzer_free(ts_analyzer);
+
+    tsn->state = TsSnipperStateReady;
 }
 
 TsSnipper *ts_snipper_new(const gchar *filename)
@@ -340,6 +345,8 @@ TsSnipper *ts_snipper_new(const gchar *filename)
     g_mutex_init(&tsn->file_lock);
     g_mutex_init(&tsn->data_lock);
 
+    tsn->state = TsSnipperStateInitialized;
+
     return tsn;
 
 err:
@@ -351,6 +358,8 @@ void ts_snipper_destroy(TsSnipper *tsn)
 {
     if (tsn) {
         tsn_close_file(tsn);
+
+        g_free(tsn);
     }
 }
 
@@ -372,7 +381,9 @@ gboolean ts_snipper_get_write_status(TsSnipper *tsn, gsize *bytes_read, gsize *b
 
 void ts_snipper_analyze(TsSnipper *tsn)
 {
-    tsn_analyze_file(tsn);
+    if (tsn && (tsn->state == TsSnipperStateInitialized || tsn->state == TsSnipperStateReady)) {
+        tsn_analyze_file(tsn);
+    }
 }
 
 guint32 ts_snipper_get_iframe_count(TsSnipper *tsn)
@@ -642,4 +653,9 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     tsn->out.buffer = NULL;
 
     return tsn->out.writer_result;
+}
+
+TsSnipperState ts_snipper_get_state(TsSnipper *tsn)
+{
+    return tsn != NULL ? tsn->state : TsSnipperStateUnknown;
 }

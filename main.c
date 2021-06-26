@@ -44,8 +44,6 @@ struct TsSnipApp {
 
     GMutex frame_lock;
     GMutex snipper_lock;
-
-    gboolean analyze_in_progress;
 } app;
 
 static void rebuild_surface(void);
@@ -102,9 +100,7 @@ static gboolean update_drawing_area(void)
 static gpointer main_analyze_file_thread(gpointer nil)
 {
     /* lock? */
-    app.analyze_in_progress = TRUE;
     ts_snipper_analyze(app.tsn);
-    app.analyze_in_progress = FALSE;
 
     g_idle_add((GSourceFunc)update_drawing_area, NULL);
 
@@ -119,7 +115,7 @@ static gboolean main_display_progress(gpointer nil)
         gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app.progress_bar),
                 ((gdouble)done)/((gdouble)full));
     }
-    gboolean res = app.analyze_in_progress;
+    gboolean res = (ts_snipper_get_state(app.tsn) == TsSnipperStateAnalyzing);
     if (!res)
         gtk_widget_hide(app.progress_bar);
     return res;
