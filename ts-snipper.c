@@ -16,6 +16,7 @@
 
 typedef struct {
     GList *slices; /**< [TsSlice *] */
+    GList *active_slice; /**< Pointer to next/current slice in slices. */
 
     TsSnipperWriteFunc writer;
     gpointer writer_data;
@@ -24,6 +25,9 @@ typedef struct {
     guint8 *buffer;
     gsize buffer_size;
     gsize buffer_filled;
+
+    guint32 have_pat : 1; /* To not accidentally ignore pat/pmt */
+    guint32 have_pmt : 1;
 } TsSnipperOutput;
 
 struct _TsSnipper {
@@ -438,10 +442,41 @@ void ts_snipper_add_slice(TsSnipper *tsn, gsize begin, gsize end)
     tsn->out.slices = g_list_insert_sorted(tsn->out.slices, slice, (GCompareFunc)ts_slice_compare);
 }
 
+/* Check whether the given offset is inside the active slice. Move active slice forward, if necessary. */
+static gboolean tsn_check_offset_in_slice(TsSnipperOutput *tso, const size_t offset)
+{
+    /* Advance active slice, if necessary.
+     * End of active slice has to be after offset.
+     * Begin can be before or after, depending whether we are in the slice or not. */
+    while (tso->active_slice &&
+            ((TsSlice *)tso->active_slice->data)->end < offset) {
+        tso->active_slice = g_list_next(tso->active_slice);
+    }
+    if (!tso->active_slice)
+        return FALSE;
+
+    return (offset >= ((TsSlice *)tso->active_slice->data)->begin);
+}
+
 static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, const size_t offset, TsSnipperOutput *tso)
 {
-    /* if not in slice, push to buffer. */
-    /* if buffer cannot take another packet, call callback, reset buffer. */
+    /* if not in slice, or first PAT/PMT push to buffer. */
+    gboolean write_packet = !tsn_check_offset_in_slice(tso, offset);
+
+    /* Check that we do not ignore pat/pmt */
+    if (!write_packet && pidinfo) {
+        if (!tso->have_pat && pidinfo->type == PID_TYPE_PAT) {
+            write_packet = TRUE;
+            tso->have_pat = 1;
+        }
+        else if (!tso->have_pmt && pidinfo->type == PID_TYPE_PMT) {
+            write_packet = TRUE;
+            tso->have_pmt = 1;
+        }
+    }
+
+    if (!write_packet)
+        return tso->writer_result;
 
     /* push packet to buffer */
     memcpy(tso->buffer + tso->buffer_filled, packet, TS_SIZE);
@@ -468,6 +503,9 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     tsn->out.buffer_size = TSN_READ_BUFFER_SIZE;
     tsn->out.buffer_filled = 0;
     tsn->out.buffer = g_malloc(tsn->out.buffer_size);
+    tsn->out.have_pat = 0;
+    tsn->out.have_pmt = 0;
+    tsn->out.active_slice = tsn->out.slices;
 
     static TsAnalyzerClass tscls = {
         .handle_packet = (TsHandlePacketFunc)tsn_output_handle_packet

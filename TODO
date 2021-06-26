@@ -1,0 +1,4 @@
+ * Rewrite PCR/PTS/DTS after cuts.
+ * only write full pes packets (also all other pids):
+   * write until end if cut
+   * do not write until unit start

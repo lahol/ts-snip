@@ -86,7 +86,6 @@ done:
 
 static gboolean write_stream_cb(guint8 *buffer, gsize bufsiz, FILE *f)
 {
-    fprintf(stderr, "Write %zu bytes\n", bufsiz);
     gsize bytes_written;
     gsize retry_count = 0;
     while (bufsiz > 0) {
@@ -137,6 +136,17 @@ int main(int argc, char **argv)
 #else
     /* Copy file */
     if (argc >= 3) {
+
+        PESFrameInfo fi_begin;
+        PESFrameInfo fi_end;
+        /* Cleanup start */
+        if (ts_snipper_get_iframe_info(tsn, &fi_end, 0))
+            ts_snipper_add_slice(tsn, 0, fi_end.stream_offset_start);
+
+        if (ts_snipper_get_iframe_info(tsn, &fi_begin, 50) &&
+                ts_snipper_get_iframe_info(tsn, &fi_end, 1400))
+            ts_snipper_add_slice(tsn, fi_begin.stream_offset_start, fi_end.stream_offset_start);
+
         FILE *out = fopen(argv[2], "wb");
         if (out == NULL)
             goto done;
