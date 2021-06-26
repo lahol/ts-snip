@@ -21,9 +21,19 @@ typedef struct {
     guint64 id; /**< Identifier of the slices. */
     gsize begin; /**< The offset of the start of the slice. */
     gsize end; /**< The offset of the data following the slice. */
+
+    guint32 begin_frame;
+    guint32 end_frame;
+
+    guint64 pts_begin;
+    guint64 pts_end;
 } TsSlice;
 
-guint64 ts_snipper_add_slice(TsSnipper *tsn, gsize begin, gsize end);
+/** Only cut on I frames.
+ *  @param[in] frame_begin The id of the begin or -1 to cut from start.
+ *  @param[in] frame_end The id of the end or -1 to cut until the end.
+ */
+guint64 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_end);
 
 void ts_snipper_delete_slice(TsSnipper *tsn, guint64 id);
 

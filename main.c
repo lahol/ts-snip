@@ -32,7 +32,10 @@ void write_frame(AVFrame *frame, const char *filename)
 
 gboolean output_slice(TsSlice *slice, gpointer nil)
 {
-    fprintf(stderr, "Slice %zu -> %zu\n", slice->begin, slice->end);
+    fprintf(stderr, "Slice %" PRIu64 " %zu -> %zu; %" PRIu64 " -> %" PRIu64 "\n",
+            slice->id,
+            slice->begin, slice->end,
+            slice->pts_begin, slice->pts_end);
     return TRUE;
 }
 
@@ -143,15 +146,9 @@ int main(int argc, char **argv)
     /* Copy file */
     if (argc >= 3) {
 
-        PESFrameInfo fi_begin;
-        PESFrameInfo fi_end;
         /* Cleanup start */
-        if (ts_snipper_get_iframe_info(tsn, &fi_end, 0))
-            ts_snipper_add_slice(tsn, 0, fi_end.stream_offset_start);
-
-        if (ts_snipper_get_iframe_info(tsn, &fi_begin, 50) &&
-                ts_snipper_get_iframe_info(tsn, &fi_end, 1400))
-            ts_snipper_add_slice(tsn, fi_begin.stream_offset_start, fi_end.stream_offset_start);
+        ts_snipper_add_slice(tsn, -1, 0);
+        ts_snipper_add_slice(tsn, 50, 1400);
 
         ts_snipper_enum_slices(tsn, (TsSnipperEnumSlicesFunc)output_slice, NULL);
 

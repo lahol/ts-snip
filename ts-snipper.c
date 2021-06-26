@@ -433,12 +433,35 @@ static gint ts_slice_compare(TsSlice *a, TsSlice *b)
     return (gint)(a->begin - b->begin);
 }
 
-guint64 ts_snipper_add_slice(TsSnipper *tsn, gsize begin, gsize end)
+guint64 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_end)
 {
     /* FIXME Handle overlapping slices. */
+    PESFrameInfo fi_begin;
+    PESFrameInfo fi_end;
+    if (frame_begin == (guint32)(-1)) {
+        fi_begin.stream_offset_start = 0;
+        fi_begin.pts = (guint64)(-1);
+    }
+    else if (!ts_snipper_get_iframe_info(tsn, &fi_begin, frame_begin)) {
+        return -1;
+    }
+    if (frame_end == (guint32)(-1)) {
+        fi_end.stream_offset_start = tsn->file_size;
+        fi_end.pts = (guint64)(-1);
+    }
+    else if (!ts_snipper_get_iframe_info(tsn, &fi_end, frame_end)) {
+        return -1;
+    }
+
     TsSlice *slice = g_new(TsSlice, 1);
-    slice->begin = begin;
-    slice->end = end;
+    slice->begin = fi_begin.stream_offset_start;
+    slice->begin_frame = frame_begin;
+    slice->pts_begin = fi_begin.pts;
+
+    slice->end = fi_end.stream_offset_start;
+    slice->end_frame = frame_end;
+    slice->pts_end = fi_end.pts;
+
     slice->id = tsn->out.next_slice_id++;
 
     tsn->out.slices = g_list_insert_sorted(tsn->out.slices, slice, (GCompareFunc)ts_slice_compare);
