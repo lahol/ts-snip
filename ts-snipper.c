@@ -14,6 +14,18 @@
 #include <bitstream/mpeg/ts.h>
 #include <bitstream/mpeg/pes.h>
 
+typedef struct {
+    GList *slices; /**< [TsSlice *] */
+
+    TsSnipperWriteFunc writer;
+    gpointer writer_data;
+    gboolean writer_result;
+
+    guint8 *buffer;
+    gsize buffer_size;
+    gsize buffer_filled;
+} TsSnipperOutput;
+
 struct _TsSnipper {
     PidInfoManager *pmgr;
     uint32_t analyzer_client_id;
@@ -24,6 +36,8 @@ struct _TsSnipper {
 
     GArray *frame_infos;
     guint32 iframe_count;
+
+    TsSnipperOutput out;
 };
 
 /* In own module? */
@@ -405,4 +419,79 @@ void ts_snipper_get_iframe(TsSnipper *tsn, guint8 **data, gsize *length, guint32
     else {
         /* TODO Reset private data. */
     }
+}
+
+static gint ts_slice_compare(TsSlice *a, TsSlice *b)
+{
+    if (b->begin > a->begin)
+        return -1;
+    return (gint)(a->begin - b->begin);
+}
+
+void ts_snipper_add_slice(TsSnipper *tsn, gsize begin, gsize end)
+{
+    /* FIXME Handle overlapping slices. */
+    TsSlice *slice = g_new(TsSlice, 1);
+    slice->begin = begin;
+    slice->end = end;
+
+    tsn->out.slices = g_list_insert_sorted(tsn->out.slices, slice, (GCompareFunc)ts_slice_compare);
+}
+
+static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, const size_t offset, TsSnipperOutput *tso)
+{
+    /* if not in slice, push to buffer. */
+    /* if buffer cannot take another packet, call callback, reset buffer. */
+
+    /* push packet to buffer */
+    memcpy(tso->buffer + tso->buffer_filled, packet, TS_SIZE);
+    tso->buffer_filled += TS_SIZE;
+
+    /* Flush buffer to writer if there is no more space for another packet available. */
+    if (tso->buffer_filled + TS_SIZE > tso->buffer_size) {
+        tso->writer_result = tso->writer(tso->buffer, tso->buffer_filled, tso->writer_data);
+        tso->buffer_filled = 0;
+    }
+
+    return tso->writer_result;
+}
+
+gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer userdata)
+{
+    if (!tsn || !writer || !tsn->file)
+        return FALSE;
+
+    /* read input, handle with tsn_output, write last bytes in buffer. */
+    tsn->out.writer = writer;
+    tsn->out.writer_data = userdata;
+    tsn->out.writer_result = TRUE;
+    tsn->out.buffer_size = TSN_READ_BUFFER_SIZE;
+    tsn->out.buffer_filled = 0;
+    tsn->out.buffer = g_malloc(tsn->out.buffer_size);
+
+    static TsAnalyzerClass tscls = {
+        .handle_packet = (TsHandlePacketFunc)tsn_output_handle_packet
+    };
+    TsAnalyzer *ts_analyzer = ts_analyzer_new(&tscls, &tsn->out);
+
+    ts_analyzer_set_pid_info_manager(ts_analyzer, tsn->pmgr);
+
+    tsn_read_buffered(tsn,
+                      ts_analyzer,
+                      0,
+                      NULL,
+                      NULL);
+
+    ts_analyzer_free(ts_analyzer);
+
+    /* Write rest of buffer. */
+    if (tsn->out.writer_result && tsn->out.buffer_filled > 0) {
+        tsn->out.writer_result = writer(tsn->out.buffer, tsn->out.buffer_filled, userdata);
+    }
+
+    tsn->out.buffer_size = 0;
+    g_free(tsn->out.buffer);
+    tsn->out.buffer = NULL;
+
+    return tsn->out.writer_result;
 }

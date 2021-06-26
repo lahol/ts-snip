@@ -84,6 +84,25 @@ done:
 
 }
 
+static gboolean write_stream_cb(guint8 *buffer, gsize bufsiz, FILE *f)
+{
+    fprintf(stderr, "Write %zu bytes\n", bufsiz);
+    gsize bytes_written;
+    gsize retry_count = 0;
+    while (bufsiz > 0) {
+        bytes_written = fwrite(buffer, 1, bufsiz, f);
+        if (bytes_written > 0) {
+            buffer += bytes_written;
+            bufsiz -= bytes_written;
+            retry_count = 0;
+        }
+        else if (retry_count++ > 5) {
+                return FALSE;
+        }
+    }
+    return TRUE;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -100,6 +119,7 @@ int main(int argc, char **argv)
     guint32 iframe_count = ts_snipper_get_iframe_count(tsn);
     fprintf(stderr, "Found %u I frames\n", iframe_count);
 
+#if 0
     if (argc >= 3) {
         guint32 id = strtoul(argv[2], NULL, 0);
         fprintf(stderr, "Get I frame no. %u\n", id);
@@ -114,6 +134,18 @@ int main(int argc, char **argv)
             decode_image(argv[3], &frame_info, data, length);
         g_free(data);
     }
+#else
+    /* Copy file */
+    if (argc >= 3) {
+        FILE *out = fopen(argv[2], "wb");
+        if (out == NULL)
+            goto done;
+
+        ts_snipper_write(tsn, (TsSnipperWriteFunc)write_stream_cb, out);
+        fclose(out);
+    }
+#endif
+done:
 
     ts_snipper_destroy(tsn);
 
