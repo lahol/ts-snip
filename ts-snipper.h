@@ -18,11 +18,17 @@ void ts_snipper_get_iframe(TsSnipper *tsn, guint8 **data, gsize *length, guint32
 
 /** A slice in the stream, i.e., a section that is to be cut out. */
 typedef struct {
-    gsize begin; /** The offset of the start of the slice. */
-    gsize end; /** The offset of the data following the slice. */
+    guint64 id; /**< Identifier of the slices. */
+    gsize begin; /**< The offset of the start of the slice. */
+    gsize end; /**< The offset of the data following the slice. */
 } TsSlice;
 
-void ts_snipper_add_slice(TsSnipper *tsn, gsize begin, gsize end);
+guint64 ts_snipper_add_slice(TsSnipper *tsn, gsize begin, gsize end);
+
+void ts_snipper_delete_slice(TsSnipper *tsn, guint64 id);
+
+typedef gboolean (*TsSnipperEnumSlicesFunc)(TsSlice *, gpointer);
+void ts_snipper_enum_slices(TsSnipper *tsn, TsSnipperEnumSlicesFunc callback, gpointer userdata);
 
 /* enum slices, merge slices (interal), remove slice */
 

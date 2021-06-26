@@ -30,6 +30,12 @@ void write_frame(AVFrame *frame, const char *filename)
     fclose(out);
 }
 
+gboolean output_slice(TsSlice *slice, gpointer nil)
+{
+    fprintf(stderr, "Slice %zu -> %zu\n", slice->begin, slice->end);
+    return TRUE;
+}
+
 gboolean decode_image(const char *fname, PESFrameInfo *frame_info, guint8 *buffer, gsize length)
 {
     if (!fname || !frame_info || !buffer)
@@ -146,6 +152,8 @@ int main(int argc, char **argv)
         if (ts_snipper_get_iframe_info(tsn, &fi_begin, 50) &&
                 ts_snipper_get_iframe_info(tsn, &fi_end, 1400))
             ts_snipper_add_slice(tsn, fi_begin.stream_offset_start, fi_end.stream_offset_start);
+
+        ts_snipper_enum_slices(tsn, (TsSnipperEnumSlicesFunc)output_slice, NULL);
 
         FILE *out = fopen(argv[2], "wb");
         if (out == NULL)

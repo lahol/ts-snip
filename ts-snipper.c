@@ -17,6 +17,7 @@
 typedef struct {
     GList *slices; /**< [TsSlice *] */
     GList *active_slice; /**< Pointer to next/current slice in slices. */
+    guint64 next_slice_id;
 
     TsSnipperWriteFunc writer;
     gpointer writer_data;
@@ -432,14 +433,42 @@ static gint ts_slice_compare(TsSlice *a, TsSlice *b)
     return (gint)(a->begin - b->begin);
 }
 
-void ts_snipper_add_slice(TsSnipper *tsn, gsize begin, gsize end)
+guint64 ts_snipper_add_slice(TsSnipper *tsn, gsize begin, gsize end)
 {
     /* FIXME Handle overlapping slices. */
     TsSlice *slice = g_new(TsSlice, 1);
     slice->begin = begin;
     slice->end = end;
+    slice->id = tsn->out.next_slice_id++;
 
     tsn->out.slices = g_list_insert_sorted(tsn->out.slices, slice, (GCompareFunc)ts_slice_compare);
+
+    return slice->id;
+}
+
+static gint _ts_snipper_slice_compare_id(TsSlice *slice, guint64* id)
+{
+    return (slice->id == *id) ? 0 : 1;
+}
+
+void ts_snipper_delete_slice(TsSnipper *tsn, guint64 id)
+{
+    GList *rmlink = g_list_find_custom(tsn->out.slices, (GCompareFunc)_ts_snipper_slice_compare_id, (gpointer)&id);
+    if (rmlink) {
+        g_free(rmlink->data);
+        tsn->out.slices = g_list_delete_link(tsn->out.slices, rmlink);
+    }
+}
+
+void ts_snipper_enum_slices(TsSnipper *tsn, TsSnipperEnumSlicesFunc callback, gpointer userdata)
+{
+    if (!callback)
+        return;
+    GList *tmp;
+    for (tmp = tsn->out.slices; tmp; tmp = g_list_next(tmp)) {
+        if (!callback((TsSlice *)tmp->data, userdata))
+            break;
+    }
 }
 
 /* Check whether the given offset is inside the active slice. Move active slice forward, if necessary. */
