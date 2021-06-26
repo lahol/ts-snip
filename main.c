@@ -33,6 +33,7 @@ struct TsSnipApp {
     GtkWidget *drawing_area;
     GtkWidget *slider;
     GtkAdjustment *adjust_stream_pos;
+    GtkWidget *progress_bar;
 
     guint32 frame_id;
     cairo_surface_t *current_iframe_surf;
@@ -40,7 +41,6 @@ struct TsSnipApp {
     gdouble aspect_scale;
 
     GMutex frame_lock;
-    GMutex slider_lock;
     GMutex snipper_lock;
 
     gboolean analyze_in_progress;
@@ -53,7 +53,6 @@ void main_app_init(void)
     memset(&app, 0, sizeof(struct TsSnipApp));
 
     g_mutex_init(&app.frame_lock);
-    g_mutex_init(&app.slider_lock);
     g_mutex_init(&app.snipper_lock);
 }
 
@@ -68,7 +67,6 @@ void main_app_set_file(const char *filename)
 void main_app_cleanup(void)
 {
     g_mutex_clear(&app.frame_lock);
-    g_mutex_clear(&app.slider_lock);
     g_mutex_clear(&app.snipper_lock);
 
     if (app.current_iframe_surf)
@@ -80,7 +78,6 @@ void main_app_cleanup(void)
 
 void main_adjust_slider(void)
 {
-    g_mutex_lock(&app.slider_lock);
     gdouble value = gtk_adjustment_get_value(GTK_ADJUSTMENT(app.adjust_stream_pos));
     guint32 iframe_count = ts_snipper_get_iframe_count(app.tsn);
     gtk_adjustment_configure(GTK_ADJUSTMENT(app.adjust_stream_pos),
@@ -90,7 +87,6 @@ void main_adjust_slider(void)
                              1.0, /* step increment */
                              100.0, /* page_increment */
                              0.0); /* page_size */
-    g_mutex_unlock(&app.slider_lock);
 
 }
 
@@ -117,11 +113,14 @@ static gpointer main_analyze_file_thread(gpointer nil)
 static gboolean main_display_progress(gpointer nil)
 {
     gsize done, full;
-
-    if (ts_snipper_get_analyze_status(app.tsn, &done, &full))
-        fprintf(stderr, "\rProgress: %6.2f%%",
-                ((gdouble)done)/((gdouble)full)*100.0f);
-    return app.analyze_in_progress;
+    if (ts_snipper_get_analyze_status(app.tsn, &done, &full)) {
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app.progress_bar),
+                ((gdouble)done)/((gdouble)full));
+    }
+    gboolean res = app.analyze_in_progress;
+    if (!res)
+        gtk_widget_hide(app.progress_bar);
+    return res;
 }
 
 static void main_analyze_file_async(void)
@@ -129,6 +128,7 @@ static void main_analyze_file_async(void)
     g_thread_new("AnalyzeTS",
                  (GThreadFunc)main_analyze_file_thread,
                   NULL);
+    gtk_widget_show(app.progress_bar);
     g_timeout_add(200, (GSourceFunc)main_display_progress, NULL);
 }
 
@@ -292,9 +292,7 @@ static void rebuild_surface(void)
 
 static void main_adjustment_value_changed(GtkAdjustment *adjustment, gpointer nil)
 {
-    g_mutex_lock(&app.slider_lock);
     app.frame_id = (guint32)gtk_adjustment_get_value(adjustment);
-    g_mutex_unlock(&app.slider_lock);
     rebuild_surface();
 }
 
@@ -326,11 +324,15 @@ void main_init_window(void)
     gtk_scale_set_has_origin(GTK_SCALE(app.slider), FALSE);
     gtk_scale_set_draw_value(GTK_SCALE(app.slider), FALSE);
     gtk_range_set_round_digits(GTK_RANGE(app.slider), 0);
-    gtk_box_pack_end(GTK_BOX(vbox), app.slider, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(vbox), app.slider, FALSE, FALSE, 15);
+
+    app.progress_bar = gtk_progress_bar_new();
+    gtk_box_pack_end(GTK_BOX(vbox), app.progress_bar, FALSE, FALSE, 0);
 
     gtk_container_add(GTK_CONTAINER(app.main_window), vbox);
 
     gtk_widget_show_all(app.main_window);
+    gtk_widget_hide(app.progress_bar);
 }
 
 int main(int argc, char **argv)
@@ -368,7 +370,6 @@ int main(int argc, char **argv)
 
     gtk_main();
 
-    fprintf(stderr, "Quit\n");
     main_app_cleanup();
 
     return 0;
