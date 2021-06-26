@@ -29,6 +29,7 @@ struct _TsStreamInfo {
 /* In own module? */
 typedef struct _PESData {
     size_t packet_start;
+    size_t packet_end;
     GByteArray *data;
     uint64_t pts;
     uint64_t dts;
@@ -59,6 +60,7 @@ void pes_data_clear(PESData *pes)
 {
     if (pes) {
         pes->packet_start = 0;
+        pes->packet_end = 0;
         pes->pts = 0;
         pes->dts = 0;
 
@@ -88,7 +90,8 @@ void pes_data_analyze_video_13818(PESData *pes, TsStreamInfo *tsi)
                 /* Found start of I frame */
                 PESFrameInfo frame_info = {
                     .frame_number = tsi->iframe_count++,
-                    .stream_offset = pes->packet_start,
+                    .stream_offset_start = pes->packet_start,
+                    .stream_offset_end = pes->packet_end,
                     .pts = pes->pts,
                     .dts = pes->dts,
                     .pidtype = PID_TYPE_VIDEO_13818
@@ -116,7 +119,8 @@ void pes_data_analyze_video_14496(PESData *pes, TsStreamInfo *tsi)
             /* IDR image start */
             PESFrameInfo frame_info = {
                 .frame_number = tsi->iframe_count++,
-                .stream_offset = pes->packet_start,
+                .stream_offset_start = pes->packet_start,
+                .stream_offset_end = pes->packet_end,
                 .pts = pes->pts,
                 .dts = pes->dts,
                 .pidtype = PID_TYPE_VIDEO_14496
@@ -157,6 +161,7 @@ static void _tsi_handle_pes(PidInfo *pidinfo,
     if (ts_get_unitstart(packet)) {
         /* Finish last packet. */
         pes->complete = 1;
+        pes->packet_end = offset;
         if (finished_cb)
             finished_cb(pes, cb_data);
 
@@ -355,7 +360,7 @@ void ts_stream_info_get_iframe(TsStreamInfo *tsi, guint8 **data, gsize *length, 
     uint8_t buffer[8*4096];
     size_t bytes_read;
 
-    fseek(tsi->file, frame_info->stream_offset, SEEK_SET);
+    fseek(tsi->file, frame_info->stream_offset_start, SEEK_SET);
 
     while (!feof(tsi->file) && !fifi.package_found) {
         bytes_read = fread(buffer, 1, 8*4096, tsi->file);
