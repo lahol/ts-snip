@@ -28,6 +28,14 @@ static gboolean write_stream_cb(guint8 *buffer, gsize bufsiz, FILE *f)
 }
 #endif
 
+#define SNIPPER_ACTIVE_SLICE_BEGIN (1 << 0)
+#define SNIPPER_ACTIVE_SLICE_END (1 << 1)
+typedef struct {
+    guint32 flags;
+    guint32 frame_begin;
+    guint32 frame_end;
+} SnipperActiveSlice;
+
 struct TsSnipApp {
     TsSnipper *tsn;
     GtkWidget *main_window;
@@ -44,6 +52,8 @@ struct TsSnipApp {
 
     GMutex frame_lock;
     GMutex snipper_lock;
+
+    SnipperActiveSlice active_slice;
 } app;
 
 static void rebuild_surface(void);
@@ -104,7 +114,6 @@ static gpointer main_analyze_file_thread(gpointer nil)
 
     g_idle_add((GSourceFunc)update_drawing_area, NULL);
 
-    g_thread_unref(g_thread_self());
     return NULL;
 }
 
@@ -123,9 +132,10 @@ static gboolean main_display_progress(gpointer nil)
 
 static void main_analyze_file_async(void)
 {
-    g_thread_new("AnalyzeTS",
+    /* TODO Give g_task_run_in_thread() a try? */
+    g_thread_unref(g_thread_new("AnalyzeTS",
                  (GThreadFunc)main_analyze_file_thread,
-                  NULL);
+                  NULL));
     gtk_widget_show(app.progress_bar);
     g_timeout_add(200, (GSourceFunc)main_display_progress, NULL);
 }
@@ -306,18 +316,59 @@ void main_menu_file_save_as(void)
 
 void main_menu_file_quit(void)
 {
-    fprintf(stderr, "File > Quit\n");
+    /* TODO: query really quit */
     gtk_main_quit();
 }
 
-void main_menu_edit_slice_begin(void)
+static void main_slider_set_slice_markers(guint32 frame_begin, guint32 frame_end)
 {
-    fprintf(stderr, "Edit > Slice begin\n");
+    if (frame_begin != PES_FRAME_ID_INVALID)
+        gtk_scale_add_mark(GTK_SCALE(app.slider), frame_begin, GTK_POS_BOTTOM, /*"&#x21e4;"*/"[");
+    if (frame_end != PES_FRAME_ID_INVALID)
+        gtk_scale_add_mark(GTK_SCALE(app.slider), frame_end, GTK_POS_BOTTOM, /*"&#x21e5;"*/"]");
 }
 
-void main_menu_edit_slice_end(void)
+static gboolean refresh_slice_markers_cb(TsSlice *slice, gpointer nil)
 {
-    fprintf(stderr, "Edit > Slice end\n");
+    main_slider_set_slice_markers(slice->begin_frame, slice->end_frame);
+    return TRUE;
+}
+
+static void main_slider_refresh_slice_markers(void)
+{
+    gtk_scale_clear_marks(GTK_SCALE(app.slider));
+    ts_snipper_enum_slices(app.tsn, (TsSnipperEnumSlicesFunc)refresh_slice_markers_cb, NULL);
+}
+
+static void main_update_active_slice(guint32 frame_id, guint32 type)
+{
+    if (type & SNIPPER_ACTIVE_SLICE_BEGIN) {
+        app.active_slice.frame_begin = frame_id;
+    }
+    if (type & SNIPPER_ACTIVE_SLICE_END) {
+        app.active_slice.frame_end = frame_id;
+    }
+    app.active_slice.flags |= type;
+
+    if ((app.active_slice.flags & SNIPPER_ACTIVE_SLICE_BEGIN) &&
+            (app.active_slice.flags & SNIPPER_ACTIVE_SLICE_END) &&
+            (app.active_slice.frame_begin < app.active_slice.frame_end ||
+             app.active_slice.frame_begin == PES_FRAME_ID_INVALID ||
+             app.active_slice.frame_end == PES_FRAME_ID_INVALID)) {
+        ts_snipper_add_slice(app.tsn, app.active_slice.frame_begin, app.active_slice.frame_end);
+        main_slider_set_slice_markers(app.active_slice.frame_begin, app.active_slice.frame_end);
+        app.active_slice.flags = 0;
+    }
+}
+
+static void main_menu_edit_slice_begin(void)
+{
+    main_update_active_slice(app.frame_id, SNIPPER_ACTIVE_SLICE_BEGIN);
+}
+
+static void main_menu_edit_slice_end(void)
+{
+    main_update_active_slice(app.frame_id, SNIPPER_ACTIVE_SLICE_END);
 }
 
 void _main_add_accelerator(GtkWidget *item, const char *accel_signal, GtkAccelGroup *accel_group,
@@ -460,10 +511,6 @@ int main(int argc, char **argv)
 
     gtk_window_present(GTK_WINDOW(app.main_window));
     rebuild_surface();
-
-    /* Just to test marking for cutting. */
-    gtk_scale_add_mark(GTK_SCALE(app.slider), 50, GTK_POS_BOTTOM, /*"&#x21e4;"*/"[");
-    gtk_scale_add_mark(GTK_SCALE(app.slider), 100, GTK_POS_BOTTOM, /*"&#x21e5;"*/"]");
 
     gtk_main();
 

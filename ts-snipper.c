@@ -493,16 +493,16 @@ guint64 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     /* FIXME Handle overlapping slices. */
     PESFrameInfo fi_begin;
     PESFrameInfo fi_end;
-    if (frame_begin == (guint32)(-1)) {
+    if (frame_begin == PES_FRAME_ID_INVALID) {
         fi_begin.stream_offset_start = 0;
-        fi_begin.pts = (guint64)(-1);
+        fi_begin.pts = PES_FRAME_TS_INVALID;
     }
     else if (!ts_snipper_get_iframe_info(tsn, &fi_begin, frame_begin)) {
         return -1;
     }
-    if (frame_end == (guint32)(-1)) {
+    if (frame_end == PES_FRAME_ID_INVALID) {
         fi_end.stream_offset_start = tsn->file_size;
-        fi_end.pts = (guint64)(-1);
+        fi_end.pts = PES_FRAME_TS_INVALID;
     }
     else if (!ts_snipper_get_iframe_info(tsn, &fi_end, frame_end)) {
         return -1;
