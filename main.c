@@ -91,13 +91,13 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    TsStreamInfo *tsi = ts_stream_info_new(argv[1]);
-    if (!tsi) {
+    TsSnipper *tsn = ts_snipper_new(argv[1]);
+    if (!tsn) {
         fprintf(stderr, "Error opening file.\n");
         exit(1);
     }
 
-    guint32 iframe_count = ts_stream_info_get_iframe_count(tsi);
+    guint32 iframe_count = ts_snipper_get_iframe_count(tsn);
     fprintf(stderr, "Found %u I frames\n", iframe_count);
 
     if (argc >= 3) {
@@ -106,16 +106,16 @@ int main(int argc, char **argv)
         guint8 *data = NULL;
         gsize length = 0;
         PESFrameInfo frame_info;
-        if (ts_stream_info_get_iframe_info(tsi, &frame_info, id))
+        if (ts_snipper_get_iframe_info(tsn, &frame_info, id))
             fprintf(stderr, " codec: %u\n", frame_info.pidtype);
-        ts_stream_info_get_iframe(tsi, &data, &length, id);
+        ts_snipper_get_iframe(tsn, &data, &length, id);
         fprintf(stderr, " %p, len %zu\n", data, length);
         if (argc >= 4)
             decode_image(argv[3], &frame_info, data, length);
         g_free(data);
     }
 
-    ts_stream_info_destroy(tsi);
+    ts_snipper_destroy(tsn);
 
     return 0;
 }

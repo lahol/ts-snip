@@ -1,4 +1,4 @@
-#include "ts-stream-info.h"
+#include "ts-snipper.h"
 
 #include <ts-analyzer.h>
 
@@ -14,7 +14,7 @@
 #include <bitstream/mpeg/ts.h>
 #include <bitstream/mpeg/pes.h>
 
-struct _TsStreamInfo {
+struct _TsSnipper {
     PidInfoManager *pmgr;
     uint32_t analyzer_client_id;
     uint32_t random_access_client_id;
@@ -73,7 +73,7 @@ void pes_data_clear(PESData *pes)
     }
 }
 
-void pes_data_analyze_video_13818(PESData *pes, TsStreamInfo *tsi)
+void pes_data_analyze_video_13818(PESData *pes, TsSnipper *tsn)
 {
     if (!pes->have_start) {
         return;
@@ -89,14 +89,14 @@ void pes_data_analyze_video_13818(PESData *pes, TsStreamInfo *tsi)
             if (pictype == 1) {
                 /* Found start of I frame */
                 PESFrameInfo frame_info = {
-                    .frame_number = tsi->iframe_count++,
+                    .frame_number = tsn->iframe_count++,
                     .stream_offset_start = pes->packet_start,
                     .stream_offset_end = pes->packet_end,
                     .pts = pes->pts,
                     .dts = pes->dts,
                     .pidtype = PID_TYPE_VIDEO_13818
                 };
-                g_array_append_val(tsi->frame_infos, frame_info);
+                g_array_append_val(tsn->frame_infos, frame_info);
                 break;
             }
         }
@@ -106,7 +106,7 @@ void pes_data_analyze_video_13818(PESData *pes, TsStreamInfo *tsi)
     }
 }
 
-void pes_data_analyze_video_14496(PESData *pes, TsStreamInfo *tsi)
+void pes_data_analyze_video_14496(PESData *pes, TsSnipper *tsn)
 {
     if (!pes->have_start)
         return;
@@ -118,14 +118,14 @@ void pes_data_analyze_video_14496(PESData *pes, TsStreamInfo *tsi)
         if (data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01 && (data[3] & 0x1f) == 5) {
             /* IDR image start */
             PESFrameInfo frame_info = {
-                .frame_number = tsi->iframe_count++,
+                .frame_number = tsn->iframe_count++,
                 .stream_offset_start = pes->packet_start,
                 .stream_offset_end = pes->packet_end,
                 .pts = pes->pts,
                 .dts = pes->dts,
                 .pidtype = PID_TYPE_VIDEO_14496
             };
-            g_array_append_val(tsi->frame_infos, frame_info);
+            g_array_append_val(tsn->frame_infos, frame_info);
             break;
         }
 
@@ -136,7 +136,7 @@ void pes_data_analyze_video_14496(PESData *pes, TsStreamInfo *tsi)
 
 typedef void (*PESFinishedFunc)(PESData *, void *);
 
-static void _tsi_handle_pes(PidInfo *pidinfo,
+static void _tsn_handle_pes(PidInfo *pidinfo,
                             uint32_t client_id,
                             const uint8_t *packet,
                             const size_t offset,
@@ -189,64 +189,64 @@ static void _tsi_handle_pes(PidInfo *pidinfo,
     g_byte_array_append(pes->data, pes_data, pes_data_len);
 }
 
-static bool tsi_handle_packet(PidInfo *pidinfo, const uint8_t *packet, const size_t offset, TsStreamInfo *tsi)
+static bool tsn_handle_packet(PidInfo *pidinfo, const uint8_t *packet, const size_t offset, TsSnipper *tsn)
 {
-    if (!pidinfo || !tsi)
+    if (!pidinfo || !tsn)
         return true;
 
     if (pidinfo->type == PID_TYPE_VIDEO_13818) {
-        _tsi_handle_pes(pidinfo, tsi->analyzer_client_id, packet, offset,
-                (PESFinishedFunc)pes_data_analyze_video_13818, tsi);
+        _tsn_handle_pes(pidinfo, tsn->analyzer_client_id, packet, offset,
+                (PESFinishedFunc)pes_data_analyze_video_13818, tsn);
     }
     else if (pidinfo->type == PID_TYPE_VIDEO_14496) {
-        _tsi_handle_pes(pidinfo, tsi->analyzer_client_id, packet, offset,
-                (PESFinishedFunc)pes_data_analyze_video_14496, tsi);
+        _tsn_handle_pes(pidinfo, tsn->analyzer_client_id, packet, offset,
+                (PESFinishedFunc)pes_data_analyze_video_14496, tsn);
     }
 
     return true;
 }
 
-bool tsi_open_file(TsStreamInfo *tsi, const char *filename)
+bool tsn_open_file(TsSnipper *tsn, const char *filename)
 {
     struct stat st;
     if (stat(filename, &st) != 0)
         return false;
 
-    if ((tsi->file = fopen(filename, "r")) == NULL) {
+    if ((tsn->file = fopen(filename, "r")) == NULL) {
         perror("Could not open file");
         return false;
     }
 
-    tsi->file_size = st.st_size;
+    tsn->file_size = st.st_size;
 
     return true;
 }
 
-void tsi_close_file(TsStreamInfo *tsi)
+void tsn_close_file(TsSnipper *tsn)
 {
-    if (tsi->file)
-        fclose(tsi->file);
-    tsi->file = NULL;
+    if (tsn->file)
+        fclose(tsn->file);
+    tsn->file = NULL;
 }
 
-void tsi_analyze_file(TsStreamInfo *tsi)
+void tsn_analyze_file(TsSnipper *tsn)
 {
-    if (!tsi->file)
+    if (!tsn->file)
         return;
 
     static TsAnalyzerClass tscls = {
-        .handle_packet = (TsHandlePacketFunc)tsi_handle_packet,
+        .handle_packet = (TsHandlePacketFunc)tsn_handle_packet,
     };
-    TsAnalyzer *ts_analyzer = ts_analyzer_new(&tscls, tsi);
+    TsAnalyzer *ts_analyzer = ts_analyzer_new(&tscls, tsn);
 
-    ts_analyzer_set_pid_info_manager(ts_analyzer, tsi->pmgr);
+    ts_analyzer_set_pid_info_manager(ts_analyzer, tsn->pmgr);
 
     uint8_t buffer[8*4096];
     size_t bytes_read;
 
     /* read from file */
-    while (!feof(tsi->file)) {
-        bytes_read = fread(buffer, 1, 8*4096, tsi->file);
+    while (!feof(tsn->file)) {
+        bytes_read = fread(buffer, 1, 8*4096, tsn->file);
         if (bytes_read == 0) {
             fprintf(stderr, "Error reading buffer.\n");
             break;
@@ -259,53 +259,53 @@ void tsi_analyze_file(TsStreamInfo *tsi)
     ts_analyzer_free(ts_analyzer);
 }
 
-TsStreamInfo *ts_stream_info_new(const gchar *filename)
+TsSnipper *ts_snipper_new(const gchar *filename)
 {
-    TsStreamInfo *tsi = g_malloc0(sizeof(TsStreamInfo));
-    if (!tsi_open_file(tsi, filename))
+    TsSnipper *tsn = g_malloc0(sizeof(TsSnipper));
+    if (!tsn_open_file(tsn, filename))
         goto err;
 
-    tsi->pmgr = pid_info_manager_new();
-    tsi->analyzer_client_id = pid_info_manager_register_client(tsi->pmgr);
-    tsi->random_access_client_id = pid_info_manager_register_client(tsi->pmgr);
+    tsn->pmgr = pid_info_manager_new();
+    tsn->analyzer_client_id = pid_info_manager_register_client(tsn->pmgr);
+    tsn->random_access_client_id = pid_info_manager_register_client(tsn->pmgr);
 
-    tsi->frame_infos = g_array_sized_new(FALSE, /* zero-terminated? */
+    tsn->frame_infos = g_array_sized_new(FALSE, /* zero-terminated? */
                                    TRUE,  /* Clear when allocated? */
                                    sizeof(PESFrameInfo), /* Size of single element */
                                    1024 /* preallocated number of elements */);
 
-    tsi_analyze_file(tsi);
+    tsn_analyze_file(tsn);
 
-    return tsi;
+    return tsn;
 
 err:
-    ts_stream_info_destroy(tsi);
+    ts_snipper_destroy(tsn);
     return NULL;
 }
 
-void ts_stream_info_destroy(TsStreamInfo *tsi)
+void ts_snipper_destroy(TsSnipper *tsn)
 {
-    if (tsi) {
-        tsi_close_file(tsi);
+    if (tsn) {
+        tsn_close_file(tsn);
     }
 }
 
-guint32 ts_stream_info_get_iframe_count(TsStreamInfo *tsi)
+guint32 ts_snipper_get_iframe_count(TsSnipper *tsn)
 {
-    return tsi->iframe_count;
+    return tsn->iframe_count;
 }
 
-bool ts_stream_info_get_iframe_info(TsStreamInfo *tsi, PESFrameInfo *frame_info, guint32 frame_id)
+bool ts_snipper_get_iframe_info(TsSnipper *tsn, PESFrameInfo *frame_info, guint32 frame_id)
 {
-    if (!tsi || tsi->iframe_count <= frame_id)
+    if (!tsn || tsn->iframe_count <= frame_id)
         return false;
     if (frame_info)
-        *frame_info = g_array_index(tsi->frame_infos, PESFrameInfo, frame_id);
+        *frame_info = g_array_index(tsn->frame_infos, PESFrameInfo, frame_id);
     return true;
 }
 
 struct FindIFrameInfo {
-    TsStreamInfo *tsi;
+    TsSnipper *tsn;
     gboolean package_found;
 
     uint8_t *pes_data;
@@ -326,44 +326,44 @@ static bool _ts_get_iframe_handle_packet(PidInfo *pidinfo, const uint8_t *packet
         return false;
 
     if (pidinfo->type == PID_TYPE_VIDEO_13818 || pidinfo->type == PID_TYPE_VIDEO_14496) {
-        _tsi_handle_pes(pidinfo, fifi->tsi->random_access_client_id, packet, offset,
+        _tsn_handle_pes(pidinfo, fifi->tsn->random_access_client_id, packet, offset,
                 (PESFinishedFunc)_ts_get_iframe_handle_pes, fifi);
         if (fifi->package_found) {
-            pid_info_clear_private_data(pidinfo, fifi->tsi->random_access_client_id);
+            pid_info_clear_private_data(pidinfo, fifi->tsn->random_access_client_id);
             return false;
         }
     }
     return true;
 }
 
-void ts_stream_info_get_iframe(TsStreamInfo *tsi, guint8 **data, gsize *length, guint32 frame_id)
+void ts_snipper_get_iframe(TsSnipper *tsn, guint8 **data, gsize *length, guint32 frame_id)
 {
     if (!data)
         return;
-    if (!tsi || tsi->iframe_count <= frame_id || !tsi->file) {
+    if (!tsn || tsn->iframe_count <= frame_id || !tsn->file) {
         *data = NULL;
         if (length) *length = 0;
     }
 
-    PESFrameInfo *frame_info = &g_array_index(tsi->frame_infos, PESFrameInfo, frame_id);
+    PESFrameInfo *frame_info = &g_array_index(tsn->frame_infos, PESFrameInfo, frame_id);
 
     struct FindIFrameInfo fifi;
     memset(&fifi, 0, sizeof(struct FindIFrameInfo));
-    fifi.tsi = tsi;
+    fifi.tsn = tsn;
 
     static TsAnalyzerClass tscls = {
         .handle_packet = (TsHandlePacketFunc)_ts_get_iframe_handle_packet
     };
     TsAnalyzer *ts_analyzer = ts_analyzer_new(&tscls, &fifi);
-    ts_analyzer_set_pid_info_manager(ts_analyzer, tsi->pmgr);
+    ts_analyzer_set_pid_info_manager(ts_analyzer, tsn->pmgr);
 
     uint8_t buffer[8*4096];
     size_t bytes_read;
 
-    fseek(tsi->file, frame_info->stream_offset_start, SEEK_SET);
+    fseek(tsn->file, frame_info->stream_offset_start, SEEK_SET);
 
-    while (!feof(tsi->file) && !fifi.package_found) {
-        bytes_read = fread(buffer, 1, 8*4096, tsi->file);
+    while (!feof(tsn->file) && !fifi.package_found) {
+        bytes_read = fread(buffer, 1, 8*4096, tsn->file);
         if (bytes_read == 0) {
             break;
         }
