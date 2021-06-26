@@ -1,4 +1,7 @@
- * Rewrite PCR/PTS/DTS after cuts.
- * only write full pes packets (also all other pids):
-   * write until end if cut
-   * do not write until unit start
+ * [ ] Rewrite PCR/PTS/DTS after cuts.
+ * [ ] only write full pes packets (also all other pids):
+   * [ ] write until end if cut
+   * [ ] do not write until unit start
+
+ * [ ] Make reading of input asynchronous and provide method to track status.
+   * [ ] Show load status in GUI.

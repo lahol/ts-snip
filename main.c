@@ -1,6 +1,10 @@
 #include <glib.h>
 #include <stdio.h>
 #include <libavcodec/avcodec.h>
+
+#include <gdk/gdkx.h>
+#include <gtk/gtk.h>
+
 #include "ts-snipper.h"
 
 void _dump_pes(const char *fname, guint8 *data, gsize length)
@@ -111,22 +115,115 @@ static gboolean write_stream_cb(guint8 *buffer, gsize bufsiz, FILE *f)
     return TRUE;
 }
 
+struct TsSnipApp {
+    TsSnipper *tsn;
+    GtkWidget *main_window;
+    GtkWidget *drawing_area;
+    GtkWidget *slider;
+    GtkAdjustment *adjust_stream_pos;
+} app;
+
+static void main_quit(GtkWidget *widget, gpointer data)
+{
+    gtk_main_quit();
+}
+
+static void main_drawing_area_size_allocate(GtkWidget *widget, GtkAllocation *alloc, gpointer nil)
+{
+}
+
+static void main_drawing_area_realize(GtkWidget *widget, gpointer nil)
+{
+}
+
+static void main_drawing_area_draw(GtkWidget *widget, cairo_t *cr, gpointer nil)
+{
+}
+
+static void main_adjustment_value_changed(GtkAdjustment *adjustment, gpointer nil)
+{
+    fprintf(stderr, "value changed to %f\n", gtk_adjustment_get_value(adjustment));
+}
+
+void main_init_window(void)
+{
+    app.main_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    g_signal_connect(G_OBJECT(app.main_window), "destroy",
+            G_CALLBACK(main_quit), NULL);
+/*    g_signal_connect(G_OBJECT(app.main_window), "configure-event",
+            G_CALLBACK(main_window_configure_event), &app);*/
+
+    app.drawing_area = gtk_drawing_area_new();
+    gtk_widget_set_size_request(app.drawing_area, 120, 80);
+    g_signal_connect(G_OBJECT(app.drawing_area), "size-allocate",
+            G_CALLBACK(main_drawing_area_size_allocate), NULL);
+    g_signal_connect(G_OBJECT(app.drawing_area), "realize",
+            G_CALLBACK(main_drawing_area_realize), NULL);
+    g_signal_connect(G_OBJECT(app.drawing_area), "draw",
+            G_CALLBACK(main_drawing_area_draw), NULL);
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+    gtk_box_pack_start(GTK_BOX(vbox), app.drawing_area, TRUE, TRUE, 0);
+
+    app.adjust_stream_pos = gtk_adjustment_new(0.0, 0.0, 0.0, 1.0, 100.0, 0.0);
+    g_signal_connect(G_OBJECT(app.adjust_stream_pos), "value-changed",
+            G_CALLBACK(main_adjustment_value_changed), NULL);
+
+    app.slider = gtk_scale_new(GTK_ORIENTATION_HORIZONTAL, app.adjust_stream_pos);
+    gtk_scale_set_has_origin(GTK_SCALE(app.slider), FALSE);
+    gtk_scale_set_draw_value(GTK_SCALE(app.slider), FALSE);
+    gtk_range_set_round_digits(GTK_RANGE(app.slider), 0);
+    gtk_box_pack_end(GTK_BOX(vbox), app.slider, FALSE, FALSE, 0);
+
+    gtk_container_add(GTK_CONTAINER(app.main_window), vbox);
+
+    gtk_widget_show_all(app.main_window);
+}
+
 int main(int argc, char **argv)
 {
+    if (!XInitThreads()) {
+        fprintf(stderr, "XInitThreads() failed.\n");
+        exit(1);
+    }
+
+    gtk_init(&argc, &argv);
+
     if (argc < 2) {
         fprintf(stderr, "You must specify a file name.\n");
         exit(1);
     }
 
-    TsSnipper *tsn = ts_snipper_new(argv[1]);
-    if (!tsn) {
+    memset(&app, 0, sizeof(struct TsSnipApp));
+
+    app.tsn = ts_snipper_new(argv[1]);
+    if (!app.tsn) {
         fprintf(stderr, "Error opening file.\n");
         exit(1);
     }
 
-    guint32 iframe_count = ts_snipper_get_iframe_count(tsn);
+    guint32 iframe_count = ts_snipper_get_iframe_count(app.tsn);
     fprintf(stderr, "Found %u I frames\n", iframe_count);
 
+    main_init_window();
+    gtk_adjustment_configure(GTK_ADJUSTMENT(app.adjust_stream_pos),
+                             0.0, /* value */
+                             0.0, /* lower */
+                             (gdouble)iframe_count, /* upper */
+                             1.0, /* step increment */
+                             100.0, /* page_increment */
+                             0.0); /* page_size */
+
+    gtk_window_present(GTK_WINDOW(app.main_window));
+
+    gtk_scale_add_mark(GTK_SCALE(app.slider), 50, GTK_POS_BOTTOM, /*"&#x21e4;"*/"[");
+    gtk_scale_add_mark(GTK_SCALE(app.slider), 100, GTK_POS_BOTTOM, /*"&#x21e5;"*/"]");
+
+    gtk_main();
+
+    fprintf(stderr, "Quit\n");
+
+#if 0
 #if 0
     if (argc >= 3) {
         guint32 id = strtoul(argv[2], NULL, 0);
@@ -161,8 +258,9 @@ int main(int argc, char **argv)
     }
 #endif
 done:
+#endif
 
-    ts_snipper_destroy(tsn);
+    ts_snipper_destroy(app.tsn);
 
     return 0;
 }
