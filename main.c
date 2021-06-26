@@ -7,45 +7,78 @@
 
 #include "ts-snipper.h"
 
-void _dump_pes(const char *fname, guint8 *data, gsize length)
+#if 0
+static gboolean write_stream_cb(guint8 *buffer, gsize bufsiz, FILE *f)
 {
-    FILE *out = fopen(fname, "wb");
-    if (out == NULL)
-        return;
-    fwrite(data, 1, length, out);
-    fclose(out);
-}
-
-void write_frame(AVFrame *frame, const char *filename)
-{
-    FILE *out;
-    if ((out = fopen(filename, "w")) == NULL)
-        return;
-
-    int x,y;
-    fprintf(out, "P2 %d %d 255\n", frame->width, frame->height);
-    for (y = 0; y < frame->height; ++y) {
-        for (x = 0; x < frame->width; ++x) {
-            fprintf(out, "%3u ", frame->data[0][y*frame->linesize[0] + x]);
+    gsize bytes_written;
+    gsize retry_count = 0;
+    while (bufsiz > 0) {
+        bytes_written = fwrite(buffer, 1, bufsiz, f);
+        if (bytes_written > 0) {
+            buffer += bytes_written;
+            bufsiz -= bytes_written;
+            retry_count = 0;
         }
-        fprintf(out, "\n");
+        else if (retry_count++ > 5) {
+                return FALSE;
+        }
     }
-
-    fclose(out);
-}
-
-gboolean output_slice(TsSlice *slice, gpointer nil)
-{
-    fprintf(stderr, "Slice %" PRIu64 " %zu -> %zu; %" PRIu64 " -> %" PRIu64 "\n",
-            slice->id,
-            slice->begin, slice->end,
-            slice->pts_begin, slice->pts_end);
     return TRUE;
 }
+#endif
 
-gboolean decode_image(const char *fname, PESFrameInfo *frame_info, guint8 *buffer, gsize length)
+struct TsSnipApp {
+    TsSnipper *tsn;
+    GtkWidget *main_window;
+    GtkWidget *drawing_area;
+    GtkWidget *slider;
+    GtkAdjustment *adjust_stream_pos;
+
+    guint32 frame_id;
+    cairo_surface_t *current_iframe_surf;
+    AVFrame *current_iframe;
+    gdouble aspect_scale;
+} app;
+
+void cairo_render_current_frame(cairo_surface_t **surf, gdouble *aspect, AVFrame *frame)
 {
-    if (!fname || !frame_info || !buffer)
+    if (surf == NULL || frame == NULL)
+        return;
+    if (*surf != NULL && (cairo_image_surface_get_width(*surf) != frame->width ||
+                          cairo_image_surface_get_height(*surf) != frame->height)) {
+        cairo_surface_destroy(*surf);
+        *surf = NULL;
+    }
+    if (*surf == NULL) {
+        *surf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, frame->width, frame->height);
+        if (cairo_surface_status(*surf) != CAIRO_STATUS_SUCCESS) {
+            cairo_surface_destroy(*surf);
+            *surf = NULL;
+            return;
+        }
+    }
+    if (aspect) *aspect = ((gdouble)frame->sample_aspect_ratio.num) / ((gdouble)frame->sample_aspect_ratio.den);
+
+    /* flush all pending drawing actions. */
+    cairo_surface_flush(*surf);
+    int stride = cairo_image_surface_get_stride(*surf);
+    guchar *surf_data = cairo_image_surface_get_data(*surf);
+
+    int y, x;
+    for (y = 0; y < frame->height; ++y) {
+        for (x = 0; x < frame->width; ++x) {
+            *((guint32 *)(surf_data + y * stride + x * sizeof(guint32)))
+                = frame->data[0][y * frame->linesize[0] + x] * 0x00010101;
+        }
+    }
+
+    cairo_surface_mark_dirty(*surf);
+}
+
+/* TODO move to own file. */
+gboolean decode_image(PESFrameInfo *frame_info, guint8 *buffer, gsize length)
+{
+    if (!frame_info || !buffer)
         return FALSE;
 
     AVCodec *codec = NULL;
@@ -68,7 +101,8 @@ gboolean decode_image(const char *fname, PESFrameInfo *frame_info, guint8 *buffe
     }
 
     AVPacket *packet = av_packet_alloc();
-    AVFrame *frame = av_frame_alloc();
+    if (app.current_iframe == NULL)
+        app.current_iframe = av_frame_alloc();
 
     int rc = -1;
 
@@ -83,45 +117,16 @@ gboolean decode_image(const char *fname, PESFrameInfo *frame_info, guint8 *buffe
     if ((rc = avcodec_send_packet(context, packet)) < 0)
         goto done;
 
-    if ((rc = avcodec_receive_frame(context, frame)) < 0)
+    if ((rc = avcodec_receive_frame(context, app.current_iframe)) < 0)
         goto done;
 
-    write_frame(frame, fname);
-
 done:
-    av_frame_free(&frame);
     av_packet_free(&packet);
     avcodec_free_context(&context);
 
     return (rc == 0);
 
 }
-
-static gboolean write_stream_cb(guint8 *buffer, gsize bufsiz, FILE *f)
-{
-    gsize bytes_written;
-    gsize retry_count = 0;
-    while (bufsiz > 0) {
-        bytes_written = fwrite(buffer, 1, bufsiz, f);
-        if (bytes_written > 0) {
-            buffer += bytes_written;
-            bufsiz -= bytes_written;
-            retry_count = 0;
-        }
-        else if (retry_count++ > 5) {
-                return FALSE;
-        }
-    }
-    return TRUE;
-}
-
-struct TsSnipApp {
-    TsSnipper *tsn;
-    GtkWidget *main_window;
-    GtkWidget *drawing_area;
-    GtkWidget *slider;
-    GtkAdjustment *adjust_stream_pos;
-} app;
 
 static void main_quit(GtkWidget *widget, gpointer data)
 {
@@ -136,13 +141,45 @@ static void main_drawing_area_realize(GtkWidget *widget, gpointer nil)
 {
 }
 
-static void main_drawing_area_draw(GtkWidget *widget, cairo_t *cr, gpointer nil)
+static gboolean main_drawing_area_draw(GtkWidget *widget, cairo_t *cr, gpointer nil)
 {
+    guint width, height;
+    GtkStyleContext *context;
+
+    context = gtk_widget_get_style_context(widget);
+
+    width = gtk_widget_get_allocated_width(widget);
+    height = gtk_widget_get_allocated_height(widget);
+
+    gtk_render_background(context, cr, 0, 0, width, height);
+
+    if (app.current_iframe_surf) {
+        cairo_set_source_surface(cr, app.current_iframe_surf, 0, 0);
+        /* TODO scale to fit, center. */
+        cairo_paint(cr);
+    }
+
+    return FALSE;
+}
+
+static void rebuild_surface(void)
+{
+    PESFrameInfo frame_info;
+    guint8 *data = NULL;
+    gsize length = 0;
+    if (ts_snipper_get_iframe_info(app.tsn, &frame_info, app.frame_id)) {
+        ts_snipper_get_iframe(app.tsn, &data, &length, app.frame_id);
+    }
+    if (decode_image(&frame_info, data, length)) {
+        cairo_render_current_frame(&app.current_iframe_surf, &app.aspect_scale, app.current_iframe);
+        gtk_widget_queue_draw(app.drawing_area);
+    }
 }
 
 static void main_adjustment_value_changed(GtkAdjustment *adjustment, gpointer nil)
 {
-    fprintf(stderr, "value changed to %f\n", gtk_adjustment_get_value(adjustment));
+    app.frame_id = (guint32)gtk_adjustment_get_value(adjustment);
+    rebuild_surface();
 }
 
 void main_init_window(void)
@@ -215,7 +252,9 @@ int main(int argc, char **argv)
                              0.0); /* page_size */
 
     gtk_window_present(GTK_WINDOW(app.main_window));
+    rebuild_surface();
 
+    /* Just to test marking for cutting. */
     gtk_scale_add_mark(GTK_SCALE(app.slider), 50, GTK_POS_BOTTOM, /*"&#x21e4;"*/"[");
     gtk_scale_add_mark(GTK_SCALE(app.slider), 100, GTK_POS_BOTTOM, /*"&#x21e5;"*/"]");
 
@@ -259,6 +298,8 @@ int main(int argc, char **argv)
 #endif
 done:
 #endif
+
+    /* TODO cleanup frame, surf */
 
     ts_snipper_destroy(app.tsn);
 
