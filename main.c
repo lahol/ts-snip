@@ -1,7 +1,7 @@
 #include <glib.h>
 #include <stdio.h>
 #include <libavcodec/avcodec.h>
-#include "ts-stream-info.h"
+#include "ts-snipper.h"
 
 void _dump_pes(const char *fname, guint8 *data, gsize length)
 {

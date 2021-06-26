@@ -134,7 +134,43 @@ void pes_data_analyze_video_14496(PESData *pes, TsSnipper *tsn)
     }
 }
 
-typedef void (*PESFinishedFunc)(PESData *, void *);
+typedef gboolean (*TsnResumeCallback)(gpointer);
+
+/* Dummy to always resume (and not check every time for pointer). */
+static gboolean _tsn_resume_true(gpointer nil)
+{
+    return TRUE;
+}
+
+#define TSN_READ_BUFFER_SIZE (32768)
+static void tsn_read_buffered(TsSnipper *snipper,
+                              TsAnalyzer *analyzer,
+                              gsize start_offset,
+                              TsnResumeCallback resume,
+                              gpointer resume_data)
+{
+    g_return_if_fail(snipper != NULL);
+    g_return_if_fail(analyzer != NULL);
+    g_return_if_fail(snipper->file != NULL);
+    g_return_if_fail(start_offset < snipper->file_size);
+
+    if (resume == NULL)
+        resume = _tsn_resume_true;
+
+    fseek(snipper->file, start_offset, SEEK_SET);
+
+    guint8 buffer[TSN_READ_BUFFER_SIZE];
+    gsize bytes_read;
+
+    while (!feof(snipper->file) && resume(resume_data)) {
+        bytes_read = fread(buffer, 1, TSN_READ_BUFFER_SIZE, snipper->file);
+        if (bytes_read == 0)
+            break;
+        ts_analyzer_push_buffer(analyzer, buffer, bytes_read);
+    }
+}
+
+typedef void (*PESFinishedFunc)(PESData *, gpointer);
 
 static void _tsn_handle_pes(PidInfo *pidinfo,
                             uint32_t client_id,
@@ -241,20 +277,11 @@ void tsn_analyze_file(TsSnipper *tsn)
 
     ts_analyzer_set_pid_info_manager(ts_analyzer, tsn->pmgr);
 
-    uint8_t buffer[8*4096];
-    size_t bytes_read;
-
-    /* read from file */
-    while (!feof(tsn->file)) {
-        bytes_read = fread(buffer, 1, 8*4096, tsn->file);
-        if (bytes_read == 0) {
-            fprintf(stderr, "Error reading buffer.\n");
-            break;
-        }
-        if (bytes_read > 0) {
-            ts_analyzer_push_buffer(ts_analyzer, buffer, bytes_read);
-        }
-    }
+    tsn_read_buffered(tsn,
+                      ts_analyzer,
+                      0,
+                      NULL,
+                      NULL);
 
     ts_analyzer_free(ts_analyzer);
 }
@@ -336,6 +363,12 @@ static bool _ts_get_iframe_handle_packet(PidInfo *pidinfo, const uint8_t *packet
     return true;
 }
 
+/* Check if an I frame was found or if the search continues. */
+static gboolean _ts_fifi_resume(struct FindIFrameInfo *fifi)
+{
+    return !fifi->package_found;
+}
+
 void ts_snipper_get_iframe(TsSnipper *tsn, guint8 **data, gsize *length, guint32 frame_id)
 {
     if (!data)
@@ -357,20 +390,11 @@ void ts_snipper_get_iframe(TsSnipper *tsn, guint8 **data, gsize *length, guint32
     TsAnalyzer *ts_analyzer = ts_analyzer_new(&tscls, &fifi);
     ts_analyzer_set_pid_info_manager(ts_analyzer, tsn->pmgr);
 
-    uint8_t buffer[8*4096];
-    size_t bytes_read;
-
-    fseek(tsn->file, frame_info->stream_offset_start, SEEK_SET);
-
-    while (!feof(tsn->file) && !fifi.package_found) {
-        bytes_read = fread(buffer, 1, 8*4096, tsn->file);
-        if (bytes_read == 0) {
-            break;
-        }
-        if (bytes_read > 0) {
-            ts_analyzer_push_buffer(ts_analyzer, buffer, bytes_read);
-        }
-    }
+    tsn_read_buffered(tsn,
+                      ts_analyzer,
+                      frame_info->stream_offset_start,
+                      (TsnResumeCallback)_ts_fifi_resume,
+                      &fifi);
 
     ts_analyzer_free(ts_analyzer);
 
