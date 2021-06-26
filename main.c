@@ -153,11 +153,28 @@ static gboolean main_drawing_area_draw(GtkWidget *widget, cairo_t *cr, gpointer 
 
     gtk_render_background(context, cr, 0, 0, width, height);
 
-    if (app.current_iframe_surf) {
-        cairo_set_source_surface(cr, app.current_iframe_surf, 0, 0);
-        /* TODO scale to fit, center. */
-        cairo_paint(cr);
+    if (app.current_iframe_surf == NULL)
+        return FALSE;
+
+    gdouble surf_width = app.aspect_scale * cairo_image_surface_get_width(app.current_iframe_surf);
+    gdouble surf_height = (gdouble)cairo_image_surface_get_height(app.current_iframe_surf);
+
+    gdouble ratio_width = width / surf_width;
+    gdouble ratio_height = height / surf_height;
+
+    if (ratio_width < ratio_height) {
+        /* full fit for width */
+        cairo_translate(cr, 0.0, 0.5 * (height - surf_height * ratio_width));
+        cairo_scale(cr, app.aspect_scale * ratio_width, ratio_width);
     }
+    else {
+        /* full fit for height */
+        cairo_translate(cr, 0.5 * (width - surf_width * ratio_height), 0.0);
+        cairo_scale(cr, app.aspect_scale * ratio_height, ratio_height);
+    }
+
+    cairo_set_source_surface(cr, app.current_iframe_surf, 0, 0);
+    cairo_paint(cr);
 
     return FALSE;
 }
@@ -239,10 +256,9 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    guint32 iframe_count = ts_snipper_get_iframe_count(app.tsn);
-    fprintf(stderr, "Found %u I frames\n", iframe_count);
-
     main_init_window();
+
+    guint32 iframe_count = ts_snipper_get_iframe_count(app.tsn);
     gtk_adjustment_configure(GTK_ADJUSTMENT(app.adjust_stream_pos),
                              0.0, /* value */
                              0.0, /* lower */
