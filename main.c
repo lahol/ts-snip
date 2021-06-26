@@ -371,6 +371,15 @@ static void main_menu_edit_slice_end(void)
     main_update_active_slice(app.frame_id, SNIPPER_ACTIVE_SLICE_END);
 }
 
+static void main_menu_edit_slice_remove(void)
+{
+    guint32 slice_id = ts_snipper_find_slice_for_frame(app.tsn, NULL, app.frame_id);
+    if (slice_id != TS_SLICE_ID_INVALID) {
+        ts_snipper_delete_slice(app.tsn, slice_id);
+        main_slider_refresh_slice_markers();
+    }
+}
+
 void _main_add_accelerator(GtkWidget *item, const char *accel_signal, GtkAccelGroup *accel_group,
         guint accel_key, GdkModifierType accel_mods, GtkAccelFlags accel_flags,
         GCallback accel_cb, gpointer accel_data)
@@ -430,6 +439,13 @@ GtkWidget *main_create_main_menu(void)
             G_CALLBACK(main_menu_edit_slice_end), NULL);
     _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_bracketright,
             0, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_edit_slice_end), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label(_("Remove slice"));
+    g_signal_connect_swapped(G_OBJECT(item), "activate",
+            G_CALLBACK(main_menu_edit_slice_remove), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_k,
+            GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_edit_slice_remove), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
     item = gtk_menu_item_new_with_label(_("Edit"));

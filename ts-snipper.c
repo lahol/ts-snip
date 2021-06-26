@@ -17,7 +17,7 @@
 typedef struct {
     GList *slices; /**< [TsSlice *] */
     GList *active_slice; /**< Pointer to next/current slice in slices. */
-    guint64 next_slice_id;
+    guint32 next_slice_id;
 
     TsSnipperWriteFunc writer;
     gpointer writer_data;
@@ -488,7 +488,7 @@ static gint ts_slice_compare(TsSlice *a, TsSlice *b)
     return (gint)(a->begin - b->begin);
 }
 
-guint64 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_end)
+guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_end)
 {
     /* FIXME Handle overlapping slices. */
     PESFrameInfo fi_begin;
@@ -526,16 +526,41 @@ guint64 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     return slice->id;
 }
 
-static gint _ts_snipper_slice_compare_id(TsSlice *slice, guint64* id)
+static gint _ts_snipper_slice_compare_frame_in_range(TsSlice *slice, guint32 frame_id)
 {
-    return (slice->id == *id) ? 0 : 1;
+    return (slice->begin_frame <= frame_id && frame_id < slice->end_frame) ? 0 : 1;
+}
+
+guint32 ts_snipper_find_slice_for_frame(TsSnipper *tsn, TsSlice *slice, guint32 frame_id)
+{
+    guint32 slice_id = TS_SLICE_ID_INVALID;
+    g_return_val_if_fail(tsn != NULL, slice_id);
+    g_mutex_lock(&tsn->data_lock);
+    GList *slice_link = g_list_find_custom(
+                             tsn->out.slices,
+                             GUINT_TO_POINTER(frame_id),
+                             (GCompareFunc)_ts_snipper_slice_compare_frame_in_range);
+    if (slice_link) {
+        if (slice) *slice = *((TsSlice *)slice_link->data);
+        slice_id = ((TsSlice *)slice_link->data)->id;
+    }
+    g_mutex_unlock(&tsn->data_lock);
+
+    return slice_id;
+}
+
+static gint _ts_snipper_slice_compare_id(TsSlice *slice, guint32 id)
+{
+    return (slice->id == id) ? 0 : 1;
 }
 
 void ts_snipper_delete_slice(TsSnipper *tsn, guint64 id)
 {
     g_return_if_fail(tsn != NULL);
     g_mutex_lock(&tsn->data_lock);
-    GList *rmlink = g_list_find_custom(tsn->out.slices, (GCompareFunc)_ts_snipper_slice_compare_id, (gpointer)&id);
+    GList *rmlink = g_list_find_custom(tsn->out.slices,
+                                       GUINT_TO_POINTER(id),
+                                       (GCompareFunc)_ts_snipper_slice_compare_id);
     if (rmlink) {
         g_free(rmlink->data);
         tsn->out.slices = g_list_delete_link(tsn->out.slices, rmlink);

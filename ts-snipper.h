@@ -16,9 +16,10 @@ bool ts_snipper_get_iframe_info(TsSnipper *tsn, PESFrameInfo *frame_info, guint3
 
 void ts_snipper_get_iframe(TsSnipper *tsn, guint8 **data, gsize *length, guint32 frame_id);
 
+#define TS_SLICE_ID_INVALID ((guint32)(-1))
 /** A slice in the stream, i.e., a section that is to be cut out. */
 typedef struct {
-    guint64 id; /**< Identifier of the slices. */
+    guint32 id; /**< Identifier of the slices. */
     gsize begin; /**< The offset of the start of the slice. */
     gsize end; /**< The offset of the data following the slice. */
 
@@ -33,7 +34,11 @@ typedef struct {
  *  @param[in] frame_begin The id of the begin or -1 to cut from start.
  *  @param[in] frame_end The id of the end or -1 to cut until the end.
  */
-guint64 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_end);
+guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_end);
+
+/** Find a slice containing the given frame id.
+ */
+guint32 ts_snipper_find_slice_for_frame(TsSnipper *tsn, TsSlice *slice, guint32 frame_id);
 
 void ts_snipper_delete_slice(TsSnipper *tsn, guint64 id);
 
