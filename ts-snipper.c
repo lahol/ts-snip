@@ -357,16 +357,16 @@ void ts_snipper_destroy(TsSnipper *tsn)
 gboolean ts_snipper_get_analyze_status(TsSnipper *tsn, gsize *bytes_read, gsize *bytes_total)
 {
     g_return_val_if_fail(tsn != NULL, FALSE);
-    if (*bytes_read) *bytes_read = tsn->bytes_read;
-    if (*bytes_total) *bytes_total = tsn->file_size;
+    if (bytes_read) *bytes_read = tsn->bytes_read;
+    if (bytes_total) *bytes_total = tsn->file_size;
     return TRUE;
 }
 
 gboolean ts_snipper_get_write_status(TsSnipper *tsn, gsize *bytes_read, gsize *bytes_total)
 {
     g_return_val_if_fail(tsn != NULL, FALSE);
-    if (*bytes_read) *bytes_read = tsn->out.bytes_read;
-    if (*bytes_total) *bytes_total = tsn->file_size;
+    if (bytes_read) *bytes_read = tsn->out.bytes_read;
+    if (bytes_total) *bytes_total = tsn->file_size;
     return TRUE;
 }
 

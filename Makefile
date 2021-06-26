@@ -1,7 +1,7 @@
 CC = gcc
 LD = gcc
 PKG_CONFIG = pkg-config
-CFLAGS += -Wall -D_FILE_OFFSET_BITS=64 `$(PKG_CONFIG) --cflags glib-2.0 gtk+-3.0 gdk-3.0 x11 libavcodec`
+CFLAGS += -Wall -g -D_FILE_OFFSET_BITS=64 `$(PKG_CONFIG) --cflags glib-2.0 gtk+-3.0 gdk-3.0 x11 libavcodec`
 LIBS += -ldvbpsi -ltsanalyze `$(PKG_CONFIG) --libs glib-2.0 gtk+-3.0 gdk-3.0 x11 libavcodec libavutil`
 RM ?= rm
 

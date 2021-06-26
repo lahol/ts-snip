@@ -38,7 +38,99 @@ struct TsSnipApp {
     cairo_surface_t *current_iframe_surf;
     AVFrame *current_iframe;
     gdouble aspect_scale;
+
+    GMutex frame_lock;
+    GMutex slider_lock;
+    GMutex snipper_lock;
+
+    gboolean analyze_in_progress;
 } app;
+
+static void rebuild_surface(void);
+
+void main_app_init(void)
+{
+    memset(&app, 0, sizeof(struct TsSnipApp));
+
+    g_mutex_init(&app.frame_lock);
+    g_mutex_init(&app.slider_lock);
+    g_mutex_init(&app.snipper_lock);
+}
+
+void main_app_set_file(const char *filename)
+{
+    g_mutex_lock(&app.snipper_lock);
+    ts_snipper_destroy(app.tsn);
+    app.tsn = ts_snipper_new(filename);
+    g_mutex_unlock(&app.snipper_lock);
+}
+
+void main_app_cleanup(void)
+{
+    g_mutex_clear(&app.frame_lock);
+    g_mutex_clear(&app.slider_lock);
+    g_mutex_clear(&app.snipper_lock);
+
+    if (app.current_iframe_surf)
+        cairo_surface_destroy(app.current_iframe_surf);
+    if (app.current_iframe)
+        av_frame_free(&app.current_iframe);
+    ts_snipper_destroy(app.tsn);
+}
+
+void main_adjust_slider(void)
+{
+    g_mutex_lock(&app.slider_lock);
+    gdouble value = gtk_adjustment_get_value(GTK_ADJUSTMENT(app.adjust_stream_pos));
+    guint32 iframe_count = ts_snipper_get_iframe_count(app.tsn);
+    gtk_adjustment_configure(GTK_ADJUSTMENT(app.adjust_stream_pos),
+                             value, /* value */
+                             0.0, /* lower */
+                             (gdouble)iframe_count, /* upper */
+                             1.0, /* step increment */
+                             100.0, /* page_increment */
+                             0.0); /* page_size */
+    g_mutex_unlock(&app.slider_lock);
+
+}
+
+static gboolean update_drawing_area(void)
+{
+    main_adjust_slider();
+    rebuild_surface();
+    return FALSE;
+}
+
+static gpointer main_analyze_file_thread(gpointer nil)
+{
+    /* lock? */
+    app.analyze_in_progress = TRUE;
+    ts_snipper_analyze(app.tsn);
+    app.analyze_in_progress = FALSE;
+
+    g_idle_add((GSourceFunc)update_drawing_area, NULL);
+
+    g_thread_unref(g_thread_self());
+    return NULL;
+}
+
+static gboolean main_display_progress(gpointer nil)
+{
+    gsize done, full;
+
+    if (ts_snipper_get_analyze_status(app.tsn, &done, &full))
+        fprintf(stderr, "\rProgress: %6.2f%%",
+                ((gdouble)done)/((gdouble)full)*100.0f);
+    return app.analyze_in_progress;
+}
+
+static void main_analyze_file_async(void)
+{
+    g_thread_new("AnalyzeTS",
+                 (GThreadFunc)main_analyze_file_thread,
+                  NULL);
+    g_timeout_add(200, (GSourceFunc)main_display_progress, NULL);
+}
 
 void cairo_render_current_frame(cairo_surface_t **surf, gdouble *aspect, AVFrame *frame)
 {
@@ -187,15 +279,22 @@ static void rebuild_surface(void)
     if (ts_snipper_get_iframe_info(app.tsn, &frame_info, app.frame_id)) {
         ts_snipper_get_iframe(app.tsn, &data, &length, app.frame_id);
     }
+
+    g_mutex_lock(&app.frame_lock);
     if (decode_image(&frame_info, data, length)) {
         cairo_render_current_frame(&app.current_iframe_surf, &app.aspect_scale, app.current_iframe);
-        gtk_widget_queue_draw(app.drawing_area);
     }
+    g_free(data);
+    g_mutex_unlock(&app.frame_lock);
+
+    gtk_widget_queue_draw(app.drawing_area);
 }
 
 static void main_adjustment_value_changed(GtkAdjustment *adjustment, gpointer nil)
 {
+    g_mutex_lock(&app.slider_lock);
     app.frame_id = (guint32)gtk_adjustment_get_value(adjustment);
+    g_mutex_unlock(&app.slider_lock);
     rebuild_surface();
 }
 
@@ -248,9 +347,9 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    memset(&app, 0, sizeof(struct TsSnipApp));
+    main_app_init();
+    main_app_set_file(argv[1]);
 
-    app.tsn = ts_snipper_new(argv[1]);
     if (!app.tsn) {
         fprintf(stderr, "Error opening file.\n");
         exit(1);
@@ -258,15 +357,7 @@ int main(int argc, char **argv)
 
     main_init_window();
 
-    ts_snipper_analyze(app.tsn);
-    guint32 iframe_count = ts_snipper_get_iframe_count(app.tsn);
-    gtk_adjustment_configure(GTK_ADJUSTMENT(app.adjust_stream_pos),
-                             0.0, /* value */
-                             0.0, /* lower */
-                             (gdouble)iframe_count, /* upper */
-                             1.0, /* step increment */
-                             100.0, /* page_increment */
-                             0.0); /* page_size */
+    main_analyze_file_async();
 
     gtk_window_present(GTK_WINDOW(app.main_window));
     rebuild_surface();
@@ -278,47 +369,7 @@ int main(int argc, char **argv)
     gtk_main();
 
     fprintf(stderr, "Quit\n");
-
-#if 0
-#if 0
-    if (argc >= 3) {
-        guint32 id = strtoul(argv[2], NULL, 0);
-        fprintf(stderr, "Get I frame no. %u\n", id);
-        guint8 *data = NULL;
-        gsize length = 0;
-        PESFrameInfo frame_info;
-        if (ts_snipper_get_iframe_info(tsn, &frame_info, id))
-            fprintf(stderr, " codec: %u\n", frame_info.pidtype);
-        ts_snipper_get_iframe(tsn, &data, &length, id);
-        fprintf(stderr, " %p, len %zu\n", data, length);
-        if (argc >= 4)
-            decode_image(argv[3], &frame_info, data, length);
-        g_free(data);
-    }
-#else
-    /* Copy file */
-    if (argc >= 3) {
-
-        /* Cleanup start */
-        ts_snipper_add_slice(tsn, -1, 0);
-        ts_snipper_add_slice(tsn, 50, 1400);
-
-        ts_snipper_enum_slices(tsn, (TsSnipperEnumSlicesFunc)output_slice, NULL);
-
-        FILE *out = fopen(argv[2], "wb");
-        if (out == NULL)
-            goto done;
-
-        ts_snipper_write(tsn, (TsSnipperWriteFunc)write_stream_cb, out);
-        fclose(out);
-    }
-#endif
-done:
-#endif
-
-    /* TODO cleanup frame, surf */
-
-    ts_snipper_destroy(app.tsn);
+    main_app_cleanup();
 
     return 0;
 }
