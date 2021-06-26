@@ -4,6 +4,7 @@
 
 #include <gdk/gdkx.h>
 #include <gtk/gtk.h>
+#include <glib/gi18n.h>
 
 #include "ts-snipper.h"
 
@@ -34,6 +35,7 @@ struct TsSnipApp {
     GtkWidget *slider;
     GtkAdjustment *adjust_stream_pos;
     GtkWidget *progress_bar;
+    GtkAccelGroup *accelerator_group;
 
     guint32 frame_id;
     cairo_surface_t *current_iframe_surf;
@@ -296,13 +298,113 @@ static void main_adjustment_value_changed(GtkAdjustment *adjustment, gpointer ni
     rebuild_surface();
 }
 
+void main_menu_file_open(void)
+{
+    fprintf(stderr, "File > Open\n");
+}
+
+void main_menu_file_save_as(void)
+{
+    fprintf(stderr, "File > Save As\n");
+}
+
+void main_menu_file_quit(void)
+{
+    fprintf(stderr, "File > Quit\n");
+    gtk_main_quit();
+}
+
+void main_menu_edit_slice_begin(void)
+{
+    fprintf(stderr, "Edit > Slice begin\n");
+}
+
+void main_menu_edit_slice_end(void)
+{
+    fprintf(stderr, "Edit > Slice end\n");
+}
+
+void _main_add_accelerator(GtkWidget *item, const char *accel_signal, GtkAccelGroup *accel_group,
+        guint accel_key, GdkModifierType accel_mods, GtkAccelFlags accel_flags,
+        GCallback accel_cb, gpointer accel_data)
+{
+    gtk_widget_add_accelerator(item, accel_signal, accel_group, accel_key, accel_mods, accel_flags);
+    gtk_accel_group_connect(accel_group, accel_key, accel_mods, 0,
+            g_cclosure_new_swap(accel_cb, accel_data, NULL));
+}
+
+GtkWidget *main_create_main_menu(void)
+{
+    GtkWidget *menu_bar = gtk_menu_bar_new();
+    GtkWidget *menu = gtk_menu_new();
+
+    GtkWidget *item;
+
+    /* File */
+    item = gtk_menu_item_new_with_label(_("Open"));
+    g_signal_connect_swapped(G_OBJECT(item), "activate",
+            G_CALLBACK(main_menu_file_open), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_o,
+            GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_file_open), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label(_("Save As"));
+    g_signal_connect_swapped(G_OBJECT(item), "activate",
+            G_CALLBACK(main_menu_file_save_as), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_s,
+            GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_file_save_as), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_separator_menu_item_new();
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label(_("Quit"));
+    g_signal_connect_swapped(G_OBJECT(item), "activate",
+            G_CALLBACK(main_menu_file_quit), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_q,
+            GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_file_quit), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label(_("File"));
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(item), menu);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu_bar), item);
+
+    /* Edit */
+    menu = gtk_menu_new();
+    item = gtk_menu_item_new_with_label(_("Slice begin"));
+    g_signal_connect_swapped(G_OBJECT(item), "activate",
+            G_CALLBACK(main_menu_edit_slice_begin), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_bracketleft,
+            0, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_edit_slice_begin), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label(_("Slice end"));
+    g_signal_connect_swapped(G_OBJECT(item), "activate",
+            G_CALLBACK(main_menu_edit_slice_end), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_bracketright,
+            0, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_edit_slice_end), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label(_("Edit"));
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(item), menu);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu_bar), item);
+
+    return menu_bar;
+}
+
 void main_init_window(void)
 {
     app.main_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     g_signal_connect(G_OBJECT(app.main_window), "destroy",
             G_CALLBACK(main_quit), NULL);
-/*    g_signal_connect(G_OBJECT(app.main_window), "configure-event",
-            G_CALLBACK(main_window_configure_event), &app);*/
+
+    app.accelerator_group = gtk_accel_group_new();
+    gtk_window_add_accel_group(GTK_WINDOW(app.main_window), app.accelerator_group);
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+
+    GtkWidget *menu_bar = main_create_main_menu();
+    gtk_box_pack_start(GTK_BOX(vbox), menu_bar, FALSE, FALSE, 0);
 
     app.drawing_area = gtk_drawing_area_new();
     gtk_widget_set_size_request(app.drawing_area, 120, 80);
@@ -313,7 +415,6 @@ void main_init_window(void)
     g_signal_connect(G_OBJECT(app.drawing_area), "draw",
             G_CALLBACK(main_drawing_area_draw), NULL);
 
-    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
     gtk_box_pack_start(GTK_BOX(vbox), app.drawing_area, TRUE, TRUE, 0);
 
     app.adjust_stream_pos = gtk_adjustment_new(0.0, 0.0, 0.0, 1.0, 100.0, 0.0);
