@@ -421,7 +421,7 @@ static void main_update_active_slice(guint32 frame_id, guint32 type)
              app.active_slice.frame_begin == PES_FRAME_ID_INVALID ||
              app.active_slice.frame_end == PES_FRAME_ID_INVALID)) {
         ts_snipper_add_slice(app.tsn, app.active_slice.frame_begin, app.active_slice.frame_end);
-        main_slider_set_slice_markers(app.active_slice.frame_begin, app.active_slice.frame_end);
+        main_slider_refresh_slice_markers();
         app.active_slice.flags = 0;
     }
 }

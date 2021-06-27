@@ -60,6 +60,7 @@ struct _TsSnipper {
 
     GArray *frame_infos;
     guint32 iframe_count;
+    guint16 video_pid;
 
     TsSnipperOutput out;
 
@@ -281,10 +282,14 @@ static bool tsn_handle_packet(PidInfo *pidinfo, const uint8_t *packet, const siz
         return true;
 
     if (pidinfo->type == PID_TYPE_VIDEO_13818) {
+        if (!tsn->video_pid)
+            tsn->video_pid = pidinfo->pid;
         _tsn_handle_pes(pidinfo, tsn->analyzer_client_id, packet, offset,
                 (PESFinishedFunc)pes_data_analyze_video_13818, tsn);
     }
     else if (pidinfo->type == PID_TYPE_VIDEO_14496) {
+        if (!tsn->video_pid)
+            tsn->video_pid = pidinfo->pid;
         _tsn_handle_pes(pidinfo, tsn->analyzer_client_id, packet, offset,
                 (PESFinishedFunc)pes_data_analyze_video_14496, tsn);
     }
@@ -505,6 +510,39 @@ static gint ts_slice_compare(TsSlice *a, TsSlice *b)
     return (gint)(a->begin - b->begin);
 }
 
+/* Merge overlapping slices. */
+void ts_snipper_merge_slices(TsSnipper *tsn)
+{
+    g_mutex_lock(&tsn->data_lock);
+
+    GList *linkA, *linkB;
+    TsSlice *A, *B;
+    /* Slices are always sorted such that A.begin <= B.begin
+     * If B.begin > A.end => nothing to do, proceed with next pair.
+     * If B.begin <= A.end => merge slices (min(A.begin,B.begin)=A.begin, max(A.end,B.end))*/
+    linkA = tsn->out.slices;
+    while (linkA != NULL && (linkB = g_list_next(linkA)) != NULL) {
+        A = (TsSlice *)linkA->data;
+        B = (TsSlice *)linkB->data;
+
+        if (B->begin > A->end) {
+            linkA = linkB;
+        }
+        else {
+            if (A->end < B->end) {
+                /* copy B end information to A end. */
+                A->end = B->end;
+                A->end_frame = B->end_frame;
+                A->pts_end = B->pts_end;
+            }
+            g_free(B);
+            tsn->out.slices = g_list_delete_link(tsn->out.slices, linkB);
+        }
+    }
+
+    g_mutex_unlock(&tsn->data_lock);
+}
+
 guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_end)
 {
     /* FIXME Handle overlapping slices. */
@@ -542,12 +580,15 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     slice->pts_end = fi_end.pts;
 
     g_mutex_lock(&tsn->data_lock);
-    slice->id = tsn->out.next_slice_id++;
+    guint32 slice_id = tsn->out.next_slice_id++;
+    slice->id = slice_id; /* slice might become invalid after merging. */
 
     tsn->out.slices = g_list_insert_sorted(tsn->out.slices, slice, (GCompareFunc)ts_slice_compare);
     g_mutex_unlock(&tsn->data_lock);
 
-    return slice->id;
+    ts_snipper_merge_slices(tsn);
+
+    return slice_id;
 }
 
 static gint _ts_snipper_slice_compare_frame_in_range(TsSlice *slice, guint32 frame_id)
@@ -737,6 +778,26 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
     return tso->writer_result;
 }
 
+#if 0
+void push_term_packet(TsSnipper *tsn)
+{
+    uint8_t packet[TS_SIZE];
+    ts_init(packet);
+    ts_set_unitstart(packet);
+    ts_set_pid(packet, tsn->video_pid);
+    ts_set_adaptation(packet, 183);
+
+    memcpy(tsn->out.buffer + tsn->out.buffer_filled, packet, TS_SIZE);
+    tsn->out.buffer_filled += TS_SIZE;
+
+    if (tsn->out.buffer_filled + TS_SIZE > tsn->out.buffer_size) {
+        tsn->out.writer_result = tsn->out.writer(tsn->out.buffer, tsn->out.buffer_filled, tsn->out.writer_data);
+        tsn->out.buffer_filled = 0;
+    }
+
+}
+#endif
+
 gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer userdata)
 {
     if (!tsn || !writer || !tsn->file)
@@ -777,7 +838,9 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
                       0,
                       NULL,
                       NULL);
-
+#if 0
+    push_term_packet(tsn);
+#endif
 
     /* Write rest of buffer. */
     if (tsn->out.writer_result && tsn->out.buffer_filled > 0) {
