@@ -514,8 +514,15 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
         fi_begin.stream_offset_start = 0;
         fi_begin.pts = PES_FRAME_TS_INVALID;
     }
-    else if (!ts_snipper_get_iframe_info(tsn, &fi_begin, frame_begin)) {
+    else if (!ts_snipper_get_iframe_info(tsn, &fi_begin, frame_begin) && frame_begin != tsn->iframe_count) {
         return -1;
+    }
+    else if (frame_begin == tsn->iframe_count) {
+        if (!ts_snipper_get_iframe_info(tsn, &fi_begin, frame_begin - 1))
+            return -1;
+        fprintf(stderr, "set slice for end %zu -> %zu\n", fi_begin.stream_offset_start, fi_begin.stream_offset_end);
+        fi_begin.stream_offset_start = fi_begin.stream_offset_end;
+        fi_begin.pts = PES_FRAME_ID_INVALID;
     }
     if (frame_end == PES_FRAME_ID_INVALID) {
         fi_end.stream_offset_start = tsn->file_size;
@@ -752,6 +759,7 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     tsn->out.in_slice = 0;
 
     guint32 tmp_start_slice = ts_snipper_add_slice(tsn, -1, 0);
+    guint32 tmp_end_slice = ts_snipper_add_slice(tsn, tsn->iframe_count, -1);
 
     tsn->out.active_slice = tsn->out.slices;
 
@@ -783,6 +791,7 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     tsn->out.buffer = NULL;
 
     ts_snipper_delete_slice(tsn, tmp_start_slice);
+    ts_snipper_delete_slice(tsn, tmp_end_slice);
 
     tsn->state = TsSnipperStateReady;
 
