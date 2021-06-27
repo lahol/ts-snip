@@ -83,38 +83,14 @@ void main_adjust_slider(void)
 
 }
 
-static gboolean update_drawing_area(void)
+static void update_drawing_area(void)
 {
     main_adjust_slider();
     rebuild_surface();
-    return FALSE;
-}
-
-static gpointer main_analyze_file_thread(gpointer nil)
-{
-    /* lock? */
-    ts_snipper_analyze(app.tsn);
-
-    g_idle_add((GSourceFunc)update_drawing_area, NULL);
-
-    return NULL;
-}
-
-static gboolean main_display_progress(gpointer nil)
-{
-    gsize done, full;
-    if (ts_snipper_get_analyze_status(app.tsn, &done, &full)) {
-        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app.progress_bar),
-                ((gdouble)done)/((gdouble)full));
-    }
-    gboolean res = (ts_snipper_get_state(app.tsn) == TsSnipperStateAnalyzing);
-    if (!res)
-        gtk_widget_hide(app.progress_bar);
-    return res;
 }
 
 /* just before combining progress for analyze/write; analyze with GTask */
-static gboolean main_display_write_progress(gpointer nil)
+static gboolean main_display_progress(gpointer nil)
 {
     gsize done, full;
     TsSnipperState state = ts_snipper_get_state(app.tsn);
@@ -126,12 +102,26 @@ static gboolean main_display_write_progress(gpointer nil)
     return (state == TsSnipperStateAnalyzing || state == TsSnipperStateWriting);
 }
 
+static void main_file_analyze_result_func(GObject *source_object,
+                                          GAsyncResult *res,
+                                          gpointer userdata)
+{
+    gboolean success = FALSE;
+    success = file_read_finish(res, NULL);
+
+    if (success)
+        fprintf(stderr, "Analyze: SUCCESS\n");
+
+    gtk_widget_hide(app.progress_bar);
+    update_drawing_area();
+}
+
 static void main_analyze_file_async(void)
 {
-    /* TODO Give g_task_run_in_thread() a try? */
-    g_thread_unref(g_thread_new("AnalyzeTS",
-                 (GThreadFunc)main_analyze_file_thread,
-                  NULL));
+    file_read_async(app.tsn,
+                    NULL,
+                    main_file_analyze_result_func,
+                    NULL);
     gtk_widget_show(app.progress_bar);
     g_timeout_add(200, (GSourceFunc)main_display_progress, NULL);
 }
@@ -159,7 +149,7 @@ static void main_write_file_async(const char *filename)
                      main_file_write_result_func,
                      NULL);
     gtk_widget_show(app.progress_bar);
-    g_timeout_add(200, (GSourceFunc)main_display_write_progress, NULL);
+    g_timeout_add(200, (GSourceFunc)main_display_progress, NULL);
 }
 
 void cairo_render_current_frame(cairo_surface_t **surf, gdouble *aspect, AVFrame *frame)
