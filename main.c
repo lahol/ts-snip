@@ -113,6 +113,19 @@ static gboolean main_display_progress(gpointer nil)
     return res;
 }
 
+/* just before combining progress for analyze/write; analyze with GTask */
+static gboolean main_display_write_progress(gpointer nil)
+{
+    gsize done, full;
+    TsSnipperState state = ts_snipper_get_state(app.tsn);
+    if ((state == TsSnipperStateAnalyzing && ts_snipper_get_analyze_status(app.tsn, &done, &full)) ||
+        (state == TsSnipperStateWriting && ts_snipper_get_write_status(app.tsn, &done, &full))) {
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app.progress_bar),
+                ((gdouble)done) / ((gdouble)full));
+    }
+    return (state == TsSnipperStateAnalyzing || state == TsSnipperStateWriting);
+}
+
 static void main_analyze_file_async(void)
 {
     /* TODO Give g_task_run_in_thread() a try? */
@@ -121,6 +134,32 @@ static void main_analyze_file_async(void)
                   NULL));
     gtk_widget_show(app.progress_bar);
     g_timeout_add(200, (GSourceFunc)main_display_progress, NULL);
+}
+
+static void main_file_write_result_func(GObject *source_object,
+                                        GAsyncResult *res,
+                                        gpointer userdata)
+{
+    gboolean success = FALSE;
+
+    success = file_write_finish(res, NULL);
+
+    if (success)
+        fprintf(stderr, "write file: SUCCESS\n");
+    else
+        fprintf(stderr, "write file: FAILED\n");
+
+    gtk_widget_hide(app.progress_bar);
+}
+
+static void main_write_file_async(const char *filename)
+{
+    file_write_async(app.tsn, filename,
+                     NULL,
+                     main_file_write_result_func,
+                     NULL);
+    gtk_widget_show(app.progress_bar);
+    g_timeout_add(200, (GSourceFunc)main_display_write_progress, NULL);
 }
 
 void cairo_render_current_frame(cairo_surface_t **surf, gdouble *aspect, AVFrame *frame)
@@ -298,20 +337,6 @@ void main_menu_file_open(void)
     fprintf(stderr, "File > Open\n");
 }
 
-static void main_file_write_result_func(GObject *source_object,
-                                        GAsyncResult *res,
-                                        gpointer userdata)
-{
-    gboolean success = FALSE;
-
-    success = file_write_finish(res, NULL);
-
-    if (success)
-        fprintf(stderr, "write file: SUCCESS\n");
-    else
-        fprintf(stderr, "write file: FAILED\n");
-}
-
 void main_menu_file_save_as(void)
 {
     fprintf(stderr, "File > Save As\n");
@@ -336,11 +361,7 @@ void main_menu_file_save_as(void)
         filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
         fprintf(stderr, "write to %s\n", filename);
 
-        file_write_async(app.tsn, filename,
-                         NULL,
-                         main_file_write_result_func,
-                         NULL);
-
+        main_write_file_async(filename);
         g_free(filename);
     }
 

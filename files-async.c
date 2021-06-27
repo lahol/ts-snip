@@ -54,7 +54,7 @@ static void files_async_write_thread_cb(GTask *task,
 }
 
 void file_write_async(TsSnipper *snipper,
-                      char *filename,
+                      const char *filename,
                       GCancellable *cancellable,
                       GAsyncReadyCallback callback,
                       gpointer userdata)

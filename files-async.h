@@ -6,7 +6,7 @@
 #include "ts-snipper.h"
 
 void file_write_async(TsSnipper *snipper,
-                      char *filename,
+                      const char *filename,
                       GCancellable *cancellable,
                       GAsyncReadyCallback callback,
                       gpointer userdata);
