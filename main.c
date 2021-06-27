@@ -325,6 +325,30 @@ static void main_adjustment_value_changed(GtkAdjustment *adjustment, gpointer ni
 void main_menu_file_open(void)
 {
     fprintf(stderr, "File > Open\n");
+    GtkWidget *dialog;
+    gint res;
+    dialog = gtk_file_chooser_dialog_new(_("Save As"),
+            GTK_WINDOW(app.main_window),
+            GTK_FILE_CHOOSER_ACTION_OPEN,
+            _("_Cancel"),
+            GTK_RESPONSE_CANCEL,
+            _("_Open"),
+            GTK_RESPONSE_ACCEPT,
+            NULL);
+
+    res = gtk_dialog_run(GTK_DIALOG(dialog));
+    if (res == GTK_RESPONSE_ACCEPT) {
+        char *filename;
+
+        filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+
+        main_app_set_file(filename);
+        main_analyze_file_async();
+
+        g_free(filename);
+    }
+
+    gtk_widget_destroy(dialog);
 }
 
 void main_menu_file_save_as(void)
@@ -598,22 +622,18 @@ int main(int argc, char **argv)
 
     gtk_init(&argc, &argv);
 
-    if (argc < 2) {
-        fprintf(stderr, "You must specify a file name.\n");
-        exit(1);
-    }
-
     main_app_init();
-    main_app_set_file(argv[1]);
-
-    if (!app.tsn) {
-        fprintf(stderr, "Error opening file.\n");
-        exit(1);
-    }
-
     main_init_window();
 
-    main_analyze_file_async();
+    if (argc >= 2) {
+        main_app_set_file(argv[1]);
+
+        if (!app.tsn) {
+            fprintf(stderr, "Error opening file.\n");
+            exit(1);
+        }
+        main_analyze_file_async();
+    }
 
     gtk_window_present(GTK_WINDOW(app.main_window));
     rebuild_surface();
