@@ -7,24 +7,7 @@
 #include <glib/gi18n.h>
 
 #include "ts-snipper.h"
-
-static gboolean write_stream_cb(guint8 *buffer, gsize bufsiz, FILE *f)
-{
-    gsize bytes_written;
-    gsize retry_count = 0;
-    while (bufsiz > 0) {
-        bytes_written = fwrite(buffer, 1, bufsiz, f);
-        if (bytes_written > 0) {
-            buffer += bytes_written;
-            bufsiz -= bytes_written;
-            retry_count = 0;
-        }
-        else if (retry_count++ > 5) {
-                return FALSE;
-        }
-    }
-    return TRUE;
-}
+#include "files-async.h"
 
 #define SNIPPER_ACTIVE_SLICE_BEGIN (1 << 0)
 #define SNIPPER_ACTIVE_SLICE_END (1 << 1)
@@ -315,6 +298,20 @@ void main_menu_file_open(void)
     fprintf(stderr, "File > Open\n");
 }
 
+static void main_file_write_result_func(GObject *source_object,
+                                        GAsyncResult *res,
+                                        gpointer userdata)
+{
+    gboolean success = FALSE;
+
+    success = file_write_finish(res, NULL);
+
+    if (success)
+        fprintf(stderr, "write file: SUCCESS\n");
+    else
+        fprintf(stderr, "write file: FAILED\n");
+}
+
 void main_menu_file_save_as(void)
 {
     fprintf(stderr, "File > Save As\n");
@@ -337,16 +334,14 @@ void main_menu_file_save_as(void)
         char *filename;
 
         filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-    fprintf(stderr, "write to %s\n", filename);
+        fprintf(stderr, "write to %s\n", filename);
 
-    /* TODO make this async */
-        FILE *out;
-        if ((out = fopen(filename, "wb")) != NULL) {
-            ts_snipper_write(app.tsn, (TsSnipperWriteFunc)write_stream_cb, out);
-            fclose(out);
-        }
+        file_write_async(app.tsn, filename,
+                         NULL,
+                         main_file_write_result_func,
+                         NULL);
+
         g_free(filename);
-        fprintf(stderr, "Done\n");
     }
 
     gtk_widget_destroy(dialog);

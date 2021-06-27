@@ -649,7 +649,7 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     if (!tsn || !writer || !tsn->file)
         return FALSE;
 
-    if (!tsn->state == TsSnipperStateReady)
+    if (tsn->state != TsSnipperStateReady)
         return FALSE;
 
     tsn->state = TsSnipperStateWriting;
