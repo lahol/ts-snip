@@ -113,6 +113,7 @@ static void main_file_analyze_result_func(GObject *source_object,
         fprintf(stderr, "Analyze: SUCCESS\n");
 
     gtk_widget_hide(app.progress_bar);
+    gtk_adjustment_set_value(GTK_ADJUSTMENT(app.adjust_stream_pos), 0.0);
     update_drawing_area();
 }
 
@@ -324,7 +325,6 @@ static void main_adjustment_value_changed(GtkAdjustment *adjustment, gpointer ni
 
 void main_menu_file_open(void)
 {
-    fprintf(stderr, "File > Open\n");
     GtkWidget *dialog;
     gint res;
     dialog = gtk_file_chooser_dialog_new(_("Save As"),
