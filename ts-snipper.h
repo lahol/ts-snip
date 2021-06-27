@@ -62,7 +62,8 @@ typedef enum {
     TsSnipperStateUnknown = 0,
     TsSnipperStateInitialized = 1,
     TsSnipperStateAnalyzing = 2,
-    TsSnipperStateReady = 3
+    TsSnipperStateWriting = 3,
+    TsSnipperStateReady = 4
 } TsSnipperState;
 
 TsSnipperState ts_snipper_get_state(TsSnipper *tsn);

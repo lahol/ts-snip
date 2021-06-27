@@ -649,6 +649,11 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     if (!tsn || !writer || !tsn->file)
         return FALSE;
 
+    if (!tsn->state == TsSnipperStateReady)
+        return FALSE;
+
+    tsn->state = TsSnipperStateWriting;
+
     /* read input, handle with tsn_output, write last bytes in buffer. */
     tsn->out.writer = writer;
     tsn->out.writer_data = userdata;
@@ -683,6 +688,8 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     tsn->out.buffer_size = 0;
     g_free(tsn->out.buffer);
     tsn->out.buffer = NULL;
+
+    tsn->state = TsSnipperStateReady;
 
     return tsn->out.writer_result;
 }
