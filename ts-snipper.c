@@ -46,6 +46,10 @@ typedef struct {
     WriterPidAction *pid_actions; /* When writing starts, set the actions for all pids. */
     gsize pids_seen;
     gsize pid_count;
+
+    guint64 pts_delta;
+    guint64 pcr_delta;
+/*    guint64 dts_delta;*/
 } TsSnipperOutput;
 
 struct _TsSnipper {
@@ -75,6 +79,7 @@ typedef struct _PESData {
     GByteArray *data;
     uint64_t pts;
     uint64_t dts;
+    uint64_t pcr;
 
     uint32_t have_start : 1;
     uint32_t complete : 1;
@@ -87,6 +92,9 @@ PESData *pes_data_new()
     PESData *pes = malloc(sizeof(PESData));
     memset(pes, 0, sizeof(PESData));
     pes->data = g_byte_array_sized_new(65536);
+    pes->pts = PES_FRAME_TS_INVALID;
+    pes->dts = PES_FRAME_TS_INVALID;
+    pes->pcr = PES_FRAME_TS_INVALID;
     return pes;
 }
 
@@ -103,8 +111,9 @@ void pes_data_clear(PESData *pes)
     if (pes) {
         pes->packet_start = 0;
         pes->packet_end = 0;
-        pes->pts = 0;
-        pes->dts = 0;
+        pes->pts = PES_FRAME_TS_INVALID;
+        pes->dts = PES_FRAME_TS_INVALID;
+        pes->pcr = PES_FRAME_TS_INVALID;
 
         pes->have_start = 0;
         pes->complete = 0;
@@ -136,6 +145,7 @@ void pes_data_analyze_video_13818(PESData *pes, TsSnipper *tsn)
                     .stream_offset_end = pes->packet_end,
                     .pts = pes->pts,
                     .dts = pes->dts,
+                    .pcr = pes->pcr,
                     .pidtype = PID_TYPE_VIDEO_13818
                 };
                 g_mutex_lock(&tsn->data_lock);
@@ -167,6 +177,7 @@ void pes_data_analyze_video_14496(PESData *pes, TsSnipper *tsn)
                 .stream_offset_end = pes->packet_end,
                 .pts = pes->pts,
                 .dts = pes->dts,
+                .pcr = pes->pcr,
                 .pidtype = PID_TYPE_VIDEO_14496
             };
             g_mutex_lock(&tsn->data_lock);
@@ -236,8 +247,12 @@ static void _tsn_handle_pes(PidInfo *pidinfo,
     }
 
     size_t pes_offset = 4;
+    guint64 pcr = PES_FRAME_TS_INVALID;
     if (ts_has_adaptation(packet)) {
         pes_offset += 1 + packet[4];
+        if (tsaf_has_pcr(packet)) {
+            pcr = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet);
+        }
     }
     size_t pes_data_len = 0;
     uint8_t *pes_data = (uint8_t *)&packet[pes_offset];
@@ -253,6 +268,7 @@ static void _tsn_handle_pes(PidInfo *pidinfo,
         pes_data_clear(pes);
         pes->packet_start = offset;
         pes->have_start = 1;
+        pes->pcr = pcr;
         if (pes_has_pts(pes_data)) {
             pes->pts = pes_get_pts(pes_data);
             pes->have_pts = 1;
@@ -534,6 +550,7 @@ void ts_snipper_merge_slices(TsSnipper *tsn)
                 A->end = B->end;
                 A->end_frame = B->end_frame;
                 A->pts_end = B->pts_end;
+                A->pcr_end = B->pcr_end;
             }
             g_free(B);
             tsn->out.slices = g_list_delete_link(tsn->out.slices, linkB);
@@ -551,6 +568,7 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     if (frame_begin == PES_FRAME_ID_INVALID) {
         fi_begin.stream_offset_start = 0;
         fi_begin.pts = PES_FRAME_TS_INVALID;
+        fi_begin.pcr = PES_FRAME_TS_INVALID;
     }
     else if (!ts_snipper_get_iframe_info(tsn, &fi_begin, frame_begin) && frame_begin != tsn->iframe_count) {
         return -1;
@@ -561,10 +579,12 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
         fprintf(stderr, "set slice for end %zu -> %zu\n", fi_begin.stream_offset_start, fi_begin.stream_offset_end);
         fi_begin.stream_offset_start = fi_begin.stream_offset_end;
         fi_begin.pts = PES_FRAME_ID_INVALID;
+        fi_begin.pcr = PES_FRAME_TS_INVALID;
     }
     if (frame_end == PES_FRAME_ID_INVALID) {
         fi_end.stream_offset_start = tsn->file_size;
         fi_end.pts = PES_FRAME_TS_INVALID;
+        fi_end.pcr = PES_FRAME_TS_INVALID;
     }
     else if (!ts_snipper_get_iframe_info(tsn, &fi_end, frame_end)) {
         return -1;
@@ -574,10 +594,12 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     slice->begin = fi_begin.stream_offset_start;
     slice->begin_frame = frame_begin;
     slice->pts_begin = fi_begin.pts;
+    slice->pcr_begin = fi_begin.pcr;
 
     slice->end = fi_end.stream_offset_start;
     slice->end_frame = frame_end;
     slice->pts_end = fi_end.pts;
+    slice->pcr_end = fi_end.pcr;
 
     g_mutex_lock(&tsn->data_lock);
     guint32 slice_id = tsn->out.next_slice_id++;
@@ -696,6 +718,78 @@ static WriterPidAction *tso_pid_actions_get_for_pid(TsSnipperOutput *tso, PidInf
     return action;
 }
 
+static gboolean tso_packet_is_pes(PidInfo *pidinfo)
+{
+    return (pidinfo &&
+            (pidinfo->type == PID_TYPE_VIDEO_14496 ||
+             pidinfo->type == PID_TYPE_VIDEO_13818 ||
+             pidinfo->type == PID_TYPE_VIDEO_11172 ||
+             pidinfo->type == PID_TYPE_AUDIO_13818 ||
+             pidinfo->type == PID_TYPE_AUDIO_11172));
+}
+
+static void tso_update_pts_delta(TsSnipperOutput *tso, gsize offset)
+{
+    if (tso->active_slice && ((TsSlice *)tso->active_slice->data)->begin == offset) {
+        guint64 pts_delta = 0;
+        guint64 pcr_delta = 0;
+/*        guint64 dts_delta = 0;*/
+        TsSlice *slice = (TsSlice *)tso->active_slice->data;
+        if (slice->pts_begin != PES_FRAME_TS_INVALID &&
+            slice->pts_end != PES_FRAME_TS_INVALID &&
+            slice->pts_end > slice->pts_begin) {
+            pts_delta = slice->pts_end - slice->pts_begin;
+        }
+        if (slice->pcr_begin != PES_FRAME_TS_INVALID &&
+            slice->pcr_end != PES_FRAME_TS_INVALID &&
+            slice->pcr_end > slice->pcr_begin) {
+            pcr_delta = slice->pcr_end - slice->pcr_begin;
+        }
+/*        if (slice->dts_begin != PES_FRAME_TS_INVALID &&
+            slice->dts_end != PES_FRAME_TS_INVALID &&
+            slice->dts_end > slice->dts_begin) {
+            dts_delta = slice->dts_end - slice->dts_begin;
+        }*/
+
+        if (pts_delta && pcr_delta) {
+            tso->pts_delta += pts_delta;
+            tso->pcr_delta += pcr_delta;
+        }
+        fprintf(stderr, "Update PTS delta @%zu: %" G_GUINT64_FORMAT " -> %" G_GUINT64_FORMAT "\n",
+                offset, pts_delta, tso->pts_delta);
+    }
+}
+
+static void tso_rewrite_pts(TsSnipperOutput *tso, PidInfo *pidinfo, uint8_t *packet)
+{
+#if 0
+    /* edit pcr? */
+    if (!tso_packet_is_pes(pidinfo))
+        return;
+    if (ts_get_unitstart(packet)) {
+        size_t pes_offset = 4;
+        if (ts_has_adaptation(packet)) {
+            pes_offset += 1 + packet[4];
+            if (tsaf_has_pcr(packet)) {
+                guint64 pcr = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet);
+                pcr -= tso->pcr_delta;
+                tsaf_set_pcr(packet, (pcr / 300) & 0x1ffffffff);
+                tsaf_set_pcrext(packet, pcr % 300);
+            }
+        }
+        if (pes_offset > 180)
+            return;
+        uint8_t *pes_data = &packet[pes_offset];
+        if (pes_has_pts(pes_data)) {
+            pes_set_pts(pes_data, pes_get_pts(pes_data) - tso->pts_delta);
+        }
+        if (pes_has_dts(pes_data)) {
+            pes_set_dts(pes_data, pes_get_dts(pes_data) - tso->pts_delta);
+        }
+    }
+#endif
+}
+
 static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
 {
     if (!pidinfo)
@@ -750,6 +844,8 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
     gboolean write_packet = tso_should_write_packet(pidinfo, packet, tso);
     tso->bytes_read = offset;
 
+    tso_update_pts_delta(tso, offset);
+
     /* Check that we do not ignore pat/pmt */
     if (pidinfo) {
         if (!tso->have_pat && pidinfo->type == PID_TYPE_PAT) {
@@ -767,6 +863,8 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
 
     /* push packet to buffer */
     memcpy(tso->buffer + tso->buffer_filled, packet, TS_SIZE);
+    tso_rewrite_pts(tso, pidinfo, tso->buffer + tso->buffer_filled);
+
     tso->buffer_filled += TS_SIZE;
 
     /* Flush buffer to writer if there is no more space for another packet available. */
@@ -818,6 +916,7 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     tsn->out.have_pat = 0;
     tsn->out.have_pmt = 0;
     tsn->out.in_slice = 0;
+    tsn->out.pts_delta = 0;
 
     guint32 tmp_start_slice = ts_snipper_add_slice(tsn, -1, 0);
     guint32 tmp_end_slice = ts_snipper_add_slice(tsn, tsn->iframe_count, -1);

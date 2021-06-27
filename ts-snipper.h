@@ -28,6 +28,9 @@ typedef struct {
 
     guint64 pts_begin;
     guint64 pts_end;
+
+    guint64 pcr_begin;
+    guint64 pcr_end;
 } TsSlice;
 
 /** Only cut on I frames.
