@@ -353,7 +353,6 @@ void main_menu_file_open(void)
 
 void main_menu_file_save_as(void)
 {
-    fprintf(stderr, "File > Save As\n");
     GtkWidget *dialog;
     gint res;
     dialog = gtk_file_chooser_dialog_new(_("Save As"),
@@ -368,12 +367,10 @@ void main_menu_file_save_as(void)
     gtk_file_chooser_set_do_overwrite_confirmation(
             GTK_FILE_CHOOSER(dialog), TRUE);
     res = gtk_dialog_run(GTK_DIALOG(dialog));
-    fprintf(stderr, "ran dialog\n");
     if (res == GTK_RESPONSE_ACCEPT) {
         char *filename;
 
         filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-        fprintf(stderr, "write to %s\n", filename);
 
         main_write_file_async(filename);
         g_free(filename);

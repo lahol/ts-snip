@@ -14,10 +14,20 @@
 #include <bitstream/mpeg/ts.h>
 #include <bitstream/mpeg/pes.h>
 
+/* Actions for data stretched over multiple packets. */
+typedef enum {
+    WPAIgnoreUntilUnitStart = 0,
+    WPAWrite = 1,
+    WPAWriteUntilUnitStart = 2,
+    WPAIgnore = 3
+} WriterPidAction;
+
 typedef struct {
     GList *slices; /**< [TsSlice *] */
     GList *active_slice; /**< Pointer to next/current slice in slices. */
     guint32 next_slice_id;
+
+    guint32 writer_client_id;
 
     TsSnipperWriteFunc writer;
     gpointer writer_data;
@@ -31,6 +41,11 @@ typedef struct {
 
     guint32 have_pat : 1; /* To not accidentally ignore pat/pmt */
     guint32 have_pmt : 1;
+    guint32 in_slice : 1; /* Whether we are inside a slice or not. */
+
+    WriterPidAction *pid_actions; /* When writing starts, set the actions for all pids. */
+    gsize pids_seen;
+    gsize pid_count;
 } TsSnipperOutput;
 
 struct _TsSnipper {
@@ -336,6 +351,7 @@ TsSnipper *ts_snipper_new(const gchar *filename)
     tsn->pmgr = pid_info_manager_new();
     tsn->analyzer_client_id = pid_info_manager_register_client(tsn->pmgr);
     tsn->random_access_client_id = pid_info_manager_register_client(tsn->pmgr);
+    tsn->out.writer_client_id = pid_info_manager_register_client(tsn->pmgr);
 
     tsn->frame_infos = g_array_sized_new(FALSE, /* zero-terminated? */
                                    TRUE,  /* Clear when allocated? */
@@ -477,7 +493,8 @@ void ts_snipper_get_iframe(TsSnipper *tsn, guint8 **data, gsize *length, guint32
         if (length) *length = fifi.pes_size;
     }
     else {
-        /* TODO Reset private data. */
+        /* Reset private data. */
+        pid_info_manager_clear_private_data(tsn->pmgr, tsn->random_access_client_id);
     }
 }
 
@@ -594,6 +611,64 @@ void ts_snipper_enum_slices(TsSnipper *tsn, TsSnipperEnumSlicesFunc callback, gp
     g_mutex_unlock(&tsn->data_lock);
 }
 
+static void tso_pid_actions_init(TsSnipperOutput *tso, PidInfoManager *pmgr)
+{
+    tso->pid_count = pid_info_manager_get_pid_count(pmgr);
+    tso->pid_actions = g_new0(WriterPidAction, tso->pid_count);
+    tso->pids_seen = 0;
+}
+
+static void tso_pid_actions_cleanup(TsSnipperOutput *tso, PidInfoManager *pmgr)
+{
+    pid_info_manager_clear_private_data(pmgr, tso->writer_client_id);
+    g_free(tso->pid_actions);
+    tso->pid_actions = NULL;
+    tso->pid_count = 0;
+}
+
+static void tso_pid_actions_reset(TsSnipperOutput *tso, WriterPidAction action)
+{
+    gsize j;
+    for (j = 0; j < tso->pid_count; ++j) {
+        tso->pid_actions[j] = action;
+    }
+}
+
+static WriterPidAction *tso_pid_actions_get_for_pid(TsSnipperOutput *tso, PidInfo *pidinfo)
+{
+    /* We could handle this without private data, but this way we gain faster access (no searching). */
+    WriterPidAction *action = pid_info_get_private_data(pidinfo, tso->writer_client_id);
+    if (action == NULL) {
+        /* pids_seen cannot be larger than pid_count */
+        /* First occurrence of this pid */
+        action = &tso->pid_actions[tso->pids_seen++];
+        pid_info_set_private_data(pidinfo, tso->writer_client_id, action, NULL);
+    }
+
+    return action;
+}
+
+static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
+{
+    if (!pidinfo)
+        return TRUE;
+    WriterPidAction *action = tso_pid_actions_get_for_pid(tso, pidinfo);
+
+    if (!tso->in_slice) {
+        if (*action == WPAIgnoreUntilUnitStart && ts_get_unitstart(packet)) {
+            *action = WPAWrite;
+        }
+        /* Already set to write or NULL packet. */
+        return (*action == WPAWrite || pidinfo->pid == 0x1FFF);
+    }
+    else {
+        if (*action == WPAWriteUntilUnitStart && ts_get_unitstart(packet)) {
+            *action = WPAIgnore;
+        }
+        return !(*action == WPAIgnore || pidinfo->pid == 0x1FFF);
+    }
+}
+
 /* Check whether the given offset is inside the active slice. Move active slice forward, if necessary. */
 static gboolean tsn_check_offset_in_slice(TsSnipperOutput *tso, const size_t offset)
 {
@@ -601,7 +676,7 @@ static gboolean tsn_check_offset_in_slice(TsSnipperOutput *tso, const size_t off
      * End of active slice has to be after offset.
      * Begin can be before or after, depending whether we are in the slice or not. */
     while (tso->active_slice &&
-            ((TsSlice *)tso->active_slice->data)->end < offset) {
+            ((TsSlice *)tso->active_slice->data)->end <= offset) {
         tso->active_slice = g_list_next(tso->active_slice);
     }
     if (!tso->active_slice)
@@ -613,11 +688,22 @@ static gboolean tsn_check_offset_in_slice(TsSnipperOutput *tso, const size_t off
 static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, const size_t offset, TsSnipperOutput *tso)
 {
     /* if not in slice, or first PAT/PMT push to buffer. */
-    gboolean write_packet = !tsn_check_offset_in_slice(tso, offset);
+    gboolean in_slice = tsn_check_offset_in_slice(tso, offset);
+    if (tso->in_slice && !in_slice) {
+        /* We were in a slice and are now out of it. */
+        tso_pid_actions_reset(tso, WPAIgnoreUntilUnitStart);
+        tso->in_slice = 0;
+    }
+    else if (!tso->in_slice && in_slice) {
+        /* We changed from not in a slice to a slice. */
+        tso_pid_actions_reset(tso, WPAWriteUntilUnitStart);
+        tso->in_slice = 1;
+    }
+    gboolean write_packet = tso_should_write_packet(pidinfo, packet, tso);
     tso->bytes_read = offset;
 
     /* Check that we do not ignore pat/pmt */
-    if (!write_packet && pidinfo) {
+    if (pidinfo) {
         if (!tso->have_pat && pidinfo->type == PID_TYPE_PAT) {
             write_packet = TRUE;
             tso->have_pat = 1;
@@ -663,7 +749,13 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     tsn->out.buffer = g_malloc(tsn->out.buffer_size);
     tsn->out.have_pat = 0;
     tsn->out.have_pmt = 0;
+    tsn->out.in_slice = 0;
+
+    guint32 tmp_start_slice = ts_snipper_add_slice(tsn, -1, 0);
+
     tsn->out.active_slice = tsn->out.slices;
+
+    tso_pid_actions_init(&tsn->out, tsn->pmgr);
 
     static TsAnalyzerClass tscls = {
         .handle_packet = (TsHandlePacketFunc)tsn_output_handle_packet
@@ -678,18 +770,23 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
                       NULL,
                       NULL);
 
-    ts_analyzer_free(ts_analyzer);
 
     /* Write rest of buffer. */
     if (tsn->out.writer_result && tsn->out.buffer_filled > 0) {
         tsn->out.writer_result = writer(tsn->out.buffer, tsn->out.buffer_filled, userdata);
     }
 
+    tso_pid_actions_cleanup(&tsn->out, tsn->pmgr);
+    ts_analyzer_free(ts_analyzer);
     tsn->out.buffer_size = 0;
     g_free(tsn->out.buffer);
     tsn->out.buffer = NULL;
 
+    ts_snipper_delete_slice(tsn, tmp_start_slice);
+
     tsn->state = TsSnipperStateReady;
+
+    fflush(stderr);
 
     return tsn->out.writer_result;
 }
