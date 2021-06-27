@@ -3,6 +3,7 @@
        The only mechanism (other than decoding the package) to know when the pes video data
        is finished, is the start of a new unit. To achieve this, we add a stuffing packet
        at the end of the written data (take care of count, etc.!)
+       Or find another way not to ignore the last packet – just feed it to the set of i-frames and hope for the best?.
  * [X] only write full pes packets (also all other pids):
    * [X] write until end if cut
    * [X] do not write until unit start
