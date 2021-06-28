@@ -76,7 +76,7 @@ void main_adjust_slider(void)
     gtk_adjustment_configure(GTK_ADJUSTMENT(app.adjust_stream_pos),
                              value, /* value */
                              0.0, /* lower */
-                             (gdouble)iframe_count, /* upper */
+                             (gdouble)(iframe_count - 1), /* upper */
                              1.0, /* step increment */
                              100.0, /* page_increment */
                              0.0); /* page_size */

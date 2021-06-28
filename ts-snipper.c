@@ -24,20 +24,7 @@ typedef enum {
 
 typedef struct {
     WriterPidAction action;
-    /* If the last pcr/pts/dts is present. */
-    guint8 pcr_present : 1;
-    guint8 pts_present : 1;
-    guint8 dts_present : 1;
-
     guint8 continuity;
-    /* last encountered timestamp of the given type. */
-    gint64 pcr_last;
-    gint64 pts_last;
-    gint64 dts_last;
-    /* Accumulated delta when packet is not written. */
-    gint64 pcr_delta;
-    gint64 pts_delta;
-    gint64 dts_delta;
 } WriterPidInfo;
 
 typedef struct {
@@ -60,16 +47,14 @@ typedef struct {
     guint32 have_pat : 1; /* To not accidentally ignore pat/pmt */
     guint32 have_pmt : 1;
     guint32 in_slice : 1; /* Whether we are inside a slice or not. */
-    guint32 pcr_last_valid : 1;
+    guint32 pcr_present : 1;
 
     WriterPidInfo *pid_writer_infos; /* When writing starts, set the actions for all pids. */
     gsize pids_seen;
     gsize pid_count;
 
-    guint64 dts_delta;
-    guint64 pcr_delta;
-    guint64 pcr_last;
-/*    guint64 dts_delta;*/
+    gint64 pcr_delta;
+    gint64 pcr_last;
 } TsSnipperOutput;
 
 struct _TsSnipper {
@@ -597,12 +582,11 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     else if (frame_begin == tsn->iframe_count) {
         if (!ts_snipper_get_iframe_info(tsn, &fi_begin, frame_begin - 1))
             return -1;
-        fprintf(stderr, "set slice for end %zu -> %zu\n", fi_begin.stream_offset_start, fi_begin.stream_offset_end);
         fi_begin.stream_offset_start = fi_begin.stream_offset_end;
         fi_begin.pts = PES_FRAME_ID_INVALID;
         fi_begin.pcr = PES_FRAME_TS_INVALID;
     }
-    if (frame_end == PES_FRAME_ID_INVALID) {
+    if (frame_end == PES_FRAME_ID_INVALID || frame_end + 1 == tsn->iframe_count) {
         fi_end.stream_offset_start = tsn->file_size;
         fi_end.pts = PES_FRAME_TS_INVALID;
         fi_end.pcr = PES_FRAME_TS_INVALID;
@@ -746,71 +730,35 @@ static gboolean tso_packet_is_pes(PidInfo *pidinfo)
              pidinfo->type == PID_TYPE_VIDEO_13818 ||
              pidinfo->type == PID_TYPE_VIDEO_11172 ||
              pidinfo->type == PID_TYPE_AUDIO_13818 ||
-             pidinfo->type == PID_TYPE_AUDIO_11172));
+             pidinfo->type == PID_TYPE_AUDIO_11172 ||
+             pidinfo->type == PID_TYPE_TELETEXT));
 }
 
 static void tso_update_timestamps_delta(TsSnipperOutput *tso,
-                                        PidInfo *pidinfo,
                                         const uint8_t *packet,
                                         gboolean write_packet)
 {
     gint64 tstmp;
-    WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
-    if (!info)
-        return;
-    size_t pes_offset = 4;
     if (ts_has_adaptation(packet) && tsaf_has_pcr(packet)) {
-        pes_offset += 1 + packet[4];
-        if (tsaf_has_pcr(packet)) {
-            tstmp = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet);
-            fprintf(stderr, "[%.3u] IN: pcr %" G_GINT64_FORMAT "\n", pidinfo->pid, tstmp);
-            /* Only accumulate deltas of packets that are not written. */
-            if (info->pcr_present && !write_packet) {
-                info->pcr_delta += tstmp - info->pcr_last;
-            }
-            info->pcr_last = tstmp;
-            info->pcr_present = 1;
+        tstmp = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet);
+        /* Only accumulate deltas of packets that are not written. */
+        if (tso->pcr_present && !write_packet) {
+            tso->pcr_delta += tstmp - tso->pcr_last;
         }
-    }
-
-    /* pts/dts */
-    if (!ts_get_unitstart(packet) || !tso_packet_is_pes(pidinfo)) {
-        return;
-    }
-    const uint8_t *pes = packet + pes_offset;
-
-    if (pes_has_pts(pes)) {
-        tstmp = pes_get_pts(pes);
-        fprintf(stderr, "[%.3u] IN: pts %" G_GINT64_FORMAT "\n", pidinfo->pid, tstmp);
-        if (info->pts_present && !write_packet) {
-            info->pts_delta += tstmp - info->pts_last;
-        }
-        info->pts_last = tstmp;
-        info->pts_present = 1;
-    }
-    if (pes_has_dts(pes)) {
-        tstmp = pes_get_dts(pes);
-        fprintf(stderr, "[%.3u] IN: dts %" G_GINT64_FORMAT "\n", pidinfo->pid, tstmp);
-        if (info->dts_present && !write_packet) {
-            info->dts_delta += tstmp - info->dts_last;
-        }
-        info->dts_last = tstmp;
-        info->dts_present = 1;
+        tso->pcr_last = tstmp;
+        tso->pcr_present = 1;
     }
 }
 
+/* Rewrite on basis of pcr differences. */
 static void tso_rewrite_timestamps(TsSnipperOutput *tso, PidInfo *pidinfo, uint8_t *packet)
 {
-    guint64 tstmp;
-    WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
-    if (!info)
-        return;
+    gint64 tstmp;
     size_t pes_offset = 4;
     if (ts_has_adaptation(packet)) {
         pes_offset += 1 + packet[4];
-        if (tsaf_has_pcr(packet) && info->pcr_present) {
-            tstmp = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet) - info->pcr_delta;
-            fprintf(stderr, "[%.3u] OUT: pts %" G_GINT64_FORMAT "\n", pidinfo->pid, tstmp);
+        if (tsaf_has_pcr(packet) && tso->pcr_present) {
+            tstmp = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet) - tso->pcr_delta;
             tsaf_set_pcr(packet, tstmp / 300);
             tsaf_set_pcrext(packet, tstmp % 300);
         }
@@ -820,13 +768,13 @@ static void tso_rewrite_timestamps(TsSnipperOutput *tso, PidInfo *pidinfo, uint8
         return;
     }
     uint8_t *pes = packet + pes_offset;
-    if (pes_has_pts(pes) && info->pts_present) {
-        pes_set_pts(pes, pes_get_pts(pes) - info->pts_delta);
-        fprintf(stderr, "[%.3u] OUT: pts %" G_GINT64_FORMAT "\n", pidinfo->pid, pes_get_pts(pes));
+    /* pcr has a frequency of 300 higher than pts/dts */
+    gint64 delta = tso->pcr_delta / 300;
+    if (pes_has_pts(pes)) {
+        pes_set_pts(pes, pes_get_pts(pes) - delta);
     }
-    if (pes_has_dts(pes) && info->dts_present) {
-        pes_set_dts(pes, pes_get_dts(pes) - info->dts_delta);
-        fprintf(stderr, "[%.3u] OUT: dts %" G_GINT64_FORMAT "\n", pidinfo->pid, pes_get_dts(pes));
+    if (pes_has_dts(pes)) {
+        pes_set_dts(pes, pes_get_dts(pes) - delta);
     }
 }
 
@@ -912,7 +860,7 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
         }
     }
 
-    tso_update_timestamps_delta(tso, pidinfo, packet, write_packet);
+    tso_update_timestamps_delta(tso, packet, write_packet);
 
     if (!write_packet)
         return tso->writer_result;
@@ -972,7 +920,9 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     tsn->out.buffer = g_malloc(tsn->out.buffer_size);
     tsn->out.have_pat = 0;
     tsn->out.have_pmt = 0;
-    tsn->out.in_slice = 0;
+    tsn->out.in_slice = 1;
+    tsn->out.pcr_present = 0;
+    tsn->out.pcr_delta = 0;
 
     guint32 tmp_start_slice = ts_snipper_add_slice(tsn, -1, 0);
     guint32 tmp_end_slice = ts_snipper_add_slice(tsn, tsn->iframe_count, -1);
@@ -980,6 +930,7 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
     tsn->out.active_slice = tsn->out.slices;
 
     tso_pid_writer_infos_init(&tsn->out, tsn->pmgr);
+    tso_pid_writer_infos_reset(&tsn->out, WPAIgnore);
 
     static TsAnalyzerClass tscls = {
         .handle_packet = (TsHandlePacketFunc)tsn_output_handle_packet
