@@ -28,7 +28,8 @@ typedef struct {
     guint8 pcr_present : 1;
     guint8 pts_present : 1;
     guint8 dts_present : 1;
-    guint8 pcr_first_ignored : 1;
+
+    guint8 continuity;
     /* last encountered timestamp of the given type. */
     gint64 pcr_last;
     gint64 pts_last;
@@ -829,6 +830,19 @@ static void tso_rewrite_timestamps(TsSnipperOutput *tso, PidInfo *pidinfo, uint8
     }
 }
 
+static void tso_rewrite_continuity(TsSnipperOutput *tso, PidInfo *pidinfo, uint8_t *packet)
+{
+    WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
+    if (!info)
+        return;
+    /* Only increment when payload present. */
+    /* FIXME original duplicates should stay this way. */
+    if (ts_has_payload(packet)) {
+        info->continuity = (info->continuity + 1) & 0x0f;
+    }
+    packet[3] = (packet[3] & 0xf0) | (info->continuity);
+}
+
 static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
 {
     if (!pidinfo)
@@ -905,6 +919,7 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
     /* push packet to buffer */
     memcpy(tso->buffer + tso->buffer_filled, packet, TS_SIZE);
     tso_rewrite_timestamps(tso, pidinfo, tso->buffer + tso->buffer_filled);
+    tso_rewrite_continuity(tso, pidinfo, tso->buffer + tso->buffer_filled);
 
     tso->buffer_filled += TS_SIZE;
 
