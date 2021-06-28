@@ -71,6 +71,10 @@ struct _TsSnipper {
     guint32 iframe_count;
     guint16 video_pid;
 
+    /* first B frame after an I or P frame without another one yet */
+    gsize dangling_bframe_start;
+    gboolean dangling_bframe_present;
+
     TsSnipperOutput out;
 
     GMutex file_lock;
@@ -148,6 +152,8 @@ void pes_data_analyze_video_13818(PESData *pes, TsSnipper *tsn)
                     .frame_number = tsn->iframe_count++,
                     .stream_offset_start = pes->packet_start,
                     .stream_offset_end = pes->packet_end,
+                    .stream_offset_dangling_bframe =
+                        tsn->dangling_bframe_present ? tsn->dangling_bframe_start : pes->packet_start,
                     .pts = pes->pts,
                     .dts = pes->dts,
                     .pcr = pes->pcr,
@@ -156,7 +162,19 @@ void pes_data_analyze_video_13818(PESData *pes, TsSnipper *tsn)
                 g_mutex_lock(&tsn->data_lock);
                 g_array_append_val(tsn->frame_infos, frame_info);
                 g_mutex_unlock(&tsn->data_lock);
+                tsn->dangling_bframe_present = FALSE;
                 break;
+            }
+            else if (pictype == 2) {
+                /* P frames reset the dangling B frame also. */
+                tsn->dangling_bframe_present = FALSE;
+            }
+            else if (pictype == 3) {
+                /* Only remember the first dangling B frame. */
+                if (!tsn->dangling_bframe_present) {
+                    tsn->dangling_bframe_start = pes->packet_start;
+                    tsn->dangling_bframe_present = TRUE;
+                }
             }
         }
 
@@ -175,20 +193,29 @@ void pes_data_analyze_video_14496(PESData *pes, TsSnipper *tsn)
 
     while (bytes_left > 3) {
         if (data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01 && (data[3] & 0x1f) == 5) {
-            /* IDR image start */
-            PESFrameInfo frame_info = {
-                .frame_number = tsn->iframe_count++,
-                .stream_offset_start = pes->packet_start,
-                .stream_offset_end = pes->packet_end,
-                .pts = pes->pts,
-                .dts = pes->dts,
-                .pcr = pes->pcr,
-                .pidtype = PID_TYPE_VIDEO_14496
-            };
-            g_mutex_lock(&tsn->data_lock);
-            g_array_append_val(tsn->frame_infos, frame_info);
-            g_mutex_unlock(&tsn->data_lock);
-            break;
+            if ((data[3] & 0x1f) == 5) {
+                /* IDR image start */
+                PESFrameInfo frame_info = {
+                    .frame_number = tsn->iframe_count++,
+                    .stream_offset_start = pes->packet_start,
+                    .stream_offset_end = pes->packet_end,
+                    .stream_offset_dangling_bframe =
+                        tsn->dangling_bframe_present ? tsn->dangling_bframe_start : pes->packet_start,
+                    .pts = pes->pts,
+                    .dts = pes->dts,
+                    .pcr = pes->pcr,
+                    .pidtype = PID_TYPE_VIDEO_14496
+                };
+                g_mutex_lock(&tsn->data_lock);
+                g_array_append_val(tsn->frame_infos, frame_info);
+                g_mutex_unlock(&tsn->data_lock);
+                break;
+            }
+            else {
+                /* FIXME: Is there a similar concept to P frames in 14496-10? */
+                if (!tsn->dangling_bframe_present)
+                    tsn->dangling_bframe_start = pes->packet_start;
+            }
         }
 
         ++data;
@@ -572,6 +599,7 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     PESFrameInfo fi_begin;
     PESFrameInfo fi_end;
     if (frame_begin == PES_FRAME_ID_INVALID) {
+        fi_begin.stream_offset_dangling_bframe = 0;
         fi_begin.stream_offset_start = 0;
         fi_begin.pts = PES_FRAME_TS_INVALID;
         fi_begin.pcr = PES_FRAME_TS_INVALID;
@@ -596,7 +624,9 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     }
 
     TsSlice *slice = g_new(TsSlice, 1);
-    slice->begin = fi_begin.stream_offset_start;
+    /* Also ignore dangling, B frames, which relate to this I frame, i.e., B frames immediately before
+     * the I frame */
+    slice->begin = fi_begin.stream_offset_dangling_bframe;
     slice->begin_frame = frame_begin;
     slice->pts_begin = fi_begin.pts;
     slice->pcr_begin = fi_begin.pcr;

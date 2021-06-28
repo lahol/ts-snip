@@ -12,6 +12,7 @@ typedef struct {
     guint64 dts;
     guint64 pcr;
     gsize stream_offset_start;
+    gsize stream_offset_dangling_bframe;
     gsize stream_offset_end;
     PidType pidtype;
 } PESFrameInfo;

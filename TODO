@@ -1,6 +1,6 @@
- * [ ] Rewrite PCR/PTS/DTS after cuts.
- * [ ] Fix duration (in mpv).
- * [ ] Do not write last B frames before slice -> keep track of b frames -> FrameInfo.
+ * [X] Rewrite PCR/PTS/DTS after cuts.
+ * [X] Fix duration (in mpv) (was missing rewrite on teletext).
+ * [X] Do not write last B frames before slice (causes glitches) -> keep track of b frames -> FrameInfo.
  * [X] Correct coninuity counter.
  * [ ] Add stuffing packet after last I frame when writing
        The only mechanism (other than decoding the package) to know when the pes video data
