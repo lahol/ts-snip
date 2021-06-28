@@ -66,7 +66,7 @@ typedef struct {
     gsize pids_seen;
     gsize pid_count;
 
-    guint64 pts_delta;
+    guint64 dts_delta;
     guint64 pcr_delta;
     guint64 pcr_last;
 /*    guint64 dts_delta;*/
@@ -763,11 +763,10 @@ static void tso_update_timestamps_delta(TsSnipperOutput *tso,
         pes_offset += 1 + packet[4];
         if (tsaf_has_pcr(packet)) {
             tstmp = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet);
+            fprintf(stderr, "[%.3u] IN: pcr %" G_GINT64_FORMAT "\n", pidinfo->pid, tstmp);
             /* Only accumulate deltas of packets that are not written. */
             if (info->pcr_present && !write_packet) {
                 info->pcr_delta += tstmp - info->pcr_last;
-                fprintf(stderr, "[%.3u] Update pcr delta @ %" G_GINT64_FORMAT ": %" G_GINT64_FORMAT "\n",
-                        pidinfo->pid, tstmp, info->pcr_delta);
             }
             info->pcr_last = tstmp;
             info->pcr_present = 1;
@@ -782,20 +781,18 @@ static void tso_update_timestamps_delta(TsSnipperOutput *tso,
 
     if (pes_has_pts(pes)) {
         tstmp = pes_get_pts(pes);
+        fprintf(stderr, "[%.3u] IN: pts %" G_GINT64_FORMAT "\n", pidinfo->pid, tstmp);
         if (info->pts_present && !write_packet) {
             info->pts_delta += tstmp - info->pts_last;
-            fprintf(stderr, "[%.3u] Update pts delta @ %" G_GINT64_FORMAT ": %" G_GINT64_FORMAT "\n",
-                    pidinfo->pid, tstmp, info->pts_delta);
         }
         info->pts_last = tstmp;
         info->pts_present = 1;
     }
     if (pes_has_dts(pes)) {
         tstmp = pes_get_dts(pes);
+        fprintf(stderr, "[%.3u] IN: dts %" G_GINT64_FORMAT "\n", pidinfo->pid, tstmp);
         if (info->dts_present && !write_packet) {
             info->dts_delta += tstmp - info->dts_last;
-            fprintf(stderr, "[%.3u] Update dts delta @ %" G_GINT64_FORMAT ": %" G_GINT64_FORMAT "\n",
-                    pidinfo->pid, tstmp, info->dts_delta);
         }
         info->dts_last = tstmp;
         info->dts_present = 1;
@@ -813,6 +810,7 @@ static void tso_rewrite_timestamps(TsSnipperOutput *tso, PidInfo *pidinfo, uint8
         pes_offset += 1 + packet[4];
         if (tsaf_has_pcr(packet) && info->pcr_present) {
             tstmp = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet) - info->pcr_delta;
+            fprintf(stderr, "[%.3u] OUT: pts %" G_GINT64_FORMAT "\n", pidinfo->pid, tstmp);
             tsaf_set_pcr(packet, tstmp / 300);
             tsaf_set_pcrext(packet, tstmp % 300);
         }
@@ -824,9 +822,11 @@ static void tso_rewrite_timestamps(TsSnipperOutput *tso, PidInfo *pidinfo, uint8
     uint8_t *pes = packet + pes_offset;
     if (pes_has_pts(pes) && info->pts_present) {
         pes_set_pts(pes, pes_get_pts(pes) - info->pts_delta);
+        fprintf(stderr, "[%.3u] OUT: pts %" G_GINT64_FORMAT "\n", pidinfo->pid, pes_get_pts(pes));
     }
     if (pes_has_dts(pes) && info->dts_present) {
         pes_set_dts(pes, pes_get_dts(pes) - info->dts_delta);
+        fprintf(stderr, "[%.3u] OUT: dts %" G_GINT64_FORMAT "\n", pidinfo->pid, pes_get_dts(pes));
     }
 }
 
@@ -845,8 +845,9 @@ static void tso_rewrite_continuity(TsSnipperOutput *tso, PidInfo *pidinfo, uint8
 
 static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
 {
-    if (!pidinfo)
+    if (!pidinfo) {
         return TRUE;
+    }
     WriterPidInfo *info = tso_pid_writer_infos_get_for_pid(tso, pidinfo);
 
     if (!tso->in_slice) {
