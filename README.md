@@ -5,11 +5,10 @@ Just open a transport stream, create slices, i.e., sections to be cut out of the
 Cutting is done at I frames (ICB frames). Incomplete packets are ignored in the final output.
 
 ## DEPENDS
- * glib/gtk
+ * glib/gtk+
  * https://github.com/lahol/libtsanalyze
 
 ## Known issues
- * Timestamps have to be rewritten
  * Reopening and saving loses the last I frame. This is due to the recognition of those frames, which
    is only done by detecting the next pes unit.
- * Currently only grayscale preview of I frames (more due to laziness)
+ * Currently only color preview for yuv420p images, otherwise gray scale (more due to laziness)
