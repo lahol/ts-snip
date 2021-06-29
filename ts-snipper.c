@@ -102,7 +102,7 @@ PESData *pes_data_new()
 {
     PESData *pes = malloc(sizeof(PESData));
     memset(pes, 0, sizeof(PESData));
-    pes->data = g_byte_array_sized_new(65536);
+    pes->data = g_byte_array_new();
     pes->pts = PES_FRAME_TS_INVALID;
     pes->dts = PES_FRAME_TS_INVALID;
     pes->pcr = PES_FRAME_TS_INVALID;
@@ -487,7 +487,13 @@ void _ts_get_iframe_handle_pes(PESData *pes, struct FindIFrameInfo *fifi)
 {
     if (!fifi->package_found && pes->data->len > 0 && pes->have_start && pes->complete) {
         fifi->package_found = true;
+#if GLIB_CHECK_VERSION(2,64,0)
         fifi->pes_data = g_byte_array_steal(pes->data, &fifi->pes_size);
+#else
+        fifi->pes_size = pes->data->len;
+        fifi->pes_data = g_byte_array_free(pes->data, FALSE);
+        pes->data = g_byte_array_new();
+#endif
     }
 }
 
