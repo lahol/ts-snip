@@ -628,7 +628,7 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     TsSlice *slice = g_new(TsSlice, 1);
     /* Also ignore dangling, B frames, which relate to this I frame, i.e., B frames immediately before
      * the I frame */
-    slice->begin = /*fi_begin.stream_offset_dangling_bframe*/fi_begin.stream_offset_start;
+    slice->begin = fi_begin.stream_offset_dangling_bframe/*fi_begin.stream_offset_start*/;
     slice->begin_frame = frame_begin;
     slice->pts_begin = fi_begin.pts;
     slice->pcr_begin = fi_begin.pcr;
