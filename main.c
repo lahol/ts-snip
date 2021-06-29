@@ -1,6 +1,7 @@
 #include <glib.h>
 #include <stdio.h>
 #include <libavcodec/avcodec.h>
+#include <libswscale/swscale.h>
 
 #include <gdk/gdkx.h>
 #include <gtk/gtk.h>
@@ -165,30 +166,26 @@ static void frame_to_gray(guchar *surf_data, int stride, AVFrame *frame)
 
 }
 
-guint32 yuv_to_rgb(int16_t y, int16_t u, int16_t v)
+static void frame_to_rgb_av(guchar *surf_data, int stride, AVFrame *frame)
 {
-    gint16 r_raw = (298 * (y - 16) + 409 * (v - 128) + 128) >> 8;
-    gint16 g_raw = (298 * (y - 16) - 100 * (u - 128) - 208 * (v - 128) + 128) >> 8;
-    gint16 b_raw = (298 * (y - 16) + 516 * (u - 128) + 128) >> 8;
-
-    guint8 r = r_raw > 255 ? 255 : (r_raw < 0 ? 0 : r_raw);
-    guint8 g = g_raw > 255 ? 255 : (g_raw < 0 ? 0 : g_raw);
-    guint8 b = b_raw > 255 ? 255 : (b_raw < 0 ? 0 : b_raw);
-
-    return ((r << 16) | (g << 8) | b);
-}
-
-static void frame_to_rgb_yuv420(guchar *surf_data, int stride, AVFrame *frame)
-{
-    int y, x;
-    for (y = 0; y < frame->height; ++y) {
-        for (x = 0; x < frame->width; ++x) {
-            *((guint32 *)(surf_data + y * stride + x * sizeof(guint32)))
-                = yuv_to_rgb(frame->data[0][y * frame->linesize[0] + x],
-                             frame->data[1][(y>>1) * frame->linesize[1] + (x>>1)],
-                             frame->data[2][(y>>1) * frame->linesize[2] + (x>>1)]);
-        }
+    struct SwsContext *sws_context = sws_getContext(
+            frame->width, frame->height, frame->format, /* src */
+            frame->width, frame->height, AV_PIX_FMT_RGB32, /* dst */
+            0, NULL, NULL, NULL);
+    if (sws_context == NULL) {
+        /* todo: keep sws_context, check external, but also check format */
+        frame_to_gray(surf_data, stride, frame);
+        return;
     }
+    uint8_t *dst[] = { surf_data };
+    int dstStride[] = { stride };
+    sws_scale(sws_context,
+              (const uint8_t *const *)frame->data, /* srcSlice[] */
+              frame->linesize, /* srcStride[] */
+              0, frame->height, /* start and end */
+              dst, /* dst data */
+              dstStride);
+    sws_freeContext(sws_context);
 }
 
 void cairo_render_current_frame(cairo_surface_t **surf, gdouble *aspect, AVFrame *frame)
@@ -215,19 +212,7 @@ void cairo_render_current_frame(cairo_surface_t **surf, gdouble *aspect, AVFrame
     int stride = cairo_image_surface_get_stride(*surf);
     guchar *surf_data = cairo_image_surface_get_data(*surf);
 
-    if (frame->format == AV_PIX_FMT_YUV420P) {
-        frame_to_rgb_yuv420(surf_data, stride, frame);
-    }
-    else {
-        frame_to_gray(surf_data, stride, frame);
-    }
-/*    int y, x;
-    for (y = 0; y < frame->height; ++y) {
-        for (x = 0; x < frame->width; ++x) {
-            *((guint32 *)(surf_data + y * stride + x * sizeof(guint32)))
-                = frame->data[0][y * frame->linesize[0] + x] * 0x00010101;
-        }
-    }*/
+    frame_to_rgb_av(surf_data, stride, frame);
 
     cairo_surface_mark_dirty(*surf);
 }
