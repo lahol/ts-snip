@@ -55,6 +55,8 @@ typedef struct {
 
     gint64 pcr_delta;
     gint64 pcr_last;
+    /* Next pts of the frame after the active slice */
+    gint64 pts_cut;
 } TsSnipperOutput;
 
 struct _TsSnipper {
@@ -626,7 +628,7 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     TsSlice *slice = g_new(TsSlice, 1);
     /* Also ignore dangling, B frames, which relate to this I frame, i.e., B frames immediately before
      * the I frame */
-    slice->begin = fi_begin.stream_offset_dangling_bframe;
+    slice->begin = /*fi_begin.stream_offset_dangling_bframe*/fi_begin.stream_offset_start;
     slice->begin_frame = frame_begin;
     slice->pts_begin = fi_begin.pts;
     slice->pcr_begin = fi_begin.pcr;
@@ -764,6 +766,14 @@ static gboolean tso_packet_is_pes(PidInfo *pidinfo)
              pidinfo->type == PID_TYPE_TELETEXT));
 }
 
+static gboolean tso_packet_is_video(PidInfo *pidinfo)
+{
+    return (pidinfo &&
+            (pidinfo->type == PID_TYPE_VIDEO_14496 ||
+             pidinfo->type == PID_TYPE_VIDEO_13818 ||
+             pidinfo->type == PID_TYPE_VIDEO_11172));
+}
+
 static void tso_update_timestamps_delta(TsSnipperOutput *tso,
                                         const uint8_t *packet,
                                         gboolean write_packet)
@@ -821,6 +831,23 @@ static void tso_rewrite_continuity(TsSnipperOutput *tso, PidInfo *pidinfo, uint8
     packet[3] = (packet[3] & 0xf0) | (info->continuity);
 }
 
+static gboolean tso_check_pes_timestamp(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
+{
+    /* Not enough data to check timestamp. So we are fine. */
+    if (tso->pts_cut == PES_FRAME_TS_INVALID || !tso_packet_is_video(pidinfo))
+        return TRUE;
+    if (!ts_get_unitstart(packet)) 
+        return TRUE;
+    size_t pes_offset = 4;
+    if (ts_has_adaptation(packet))
+        pes_offset += 1 + packet[4];
+    const uint8_t *pes = packet + pes_offset;
+    if (!pes_has_pts(pes))
+        return TRUE;
+    
+    return (pes_get_pts(pes) >= tso->pts_cut);
+}
+
 static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
 {
     if (!pidinfo) {
@@ -832,6 +859,9 @@ static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet,
         if (info->action == WPAIgnoreUntilUnitStart && ts_get_unitstart(packet)) {
             info->action = WPAWrite;
         }
+        /* Check whether the timestamp is after the last cut, if not, wait until the next unit. */
+        if (!tso_check_pes_timestamp(pidinfo, packet, tso))
+            info->action = WPAIgnoreUntilUnitStart;
         /* Already set to write or NULL packet. */
         return (info->action == WPAWrite || pidinfo->pid == 0x1FFF);
     }
@@ -872,6 +902,7 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
         /* We changed from not in a slice to a slice. */
         tso_pid_writer_infos_reset(tso, WPAWriteUntilUnitStart);
         tso->in_slice = 1;
+        tso->pts_cut = ((TsSlice *)tso->active_slice->data)->pts_end;
     }
     gboolean write_packet = tso_should_write_packet(pidinfo, packet, tso);
     tso->bytes_read = offset;
