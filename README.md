@@ -6,6 +6,7 @@ Cutting is done at I frames (ICB frames). Incomplete packets are ignored in the 
 
 ## DEPENDS
  * glib/gtk+
+ * libav/libswscale
  * https://github.com/lahol/libtsanalyze
 
 ## Known issues
