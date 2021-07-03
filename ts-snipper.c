@@ -54,6 +54,9 @@ typedef struct {
     gsize pid_count;
 
     gint64 pcr_delta;
+    gint64 pcr_delta_accumulator; /* During an active slice, accumulate the deltas. Necessary
+                                     for samples with a timestamp before the slice, which occur
+                                     later. */
     gint64 pcr_last;
     /* Next pts of the frame after the active slice */
     gint64 pts_cut;
@@ -781,15 +784,14 @@ static gboolean tso_packet_is_video(PidInfo *pidinfo)
 }
 
 static void tso_update_timestamps_delta(TsSnipperOutput *tso,
-                                        const uint8_t *packet,
-                                        gboolean write_packet)
+                                        const uint8_t *packet)
 {
     gint64 tstmp;
     if (ts_has_adaptation(packet) && tsaf_has_pcr(packet)) {
         tstmp = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet);
         /* Only accumulate deltas of packets that are not written. */
-        if (tso->pcr_present && !write_packet) {
-            tso->pcr_delta += tstmp - tso->pcr_last;
+        if (tso->pcr_present && tso->in_slice) {
+            tso->pcr_delta_accumulator += tstmp - tso->pcr_last;
         }
         tso->pcr_last = tstmp;
         tso->pcr_present = 1;
@@ -903,12 +905,14 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
         /* We were in a slice and are now out of it. */
         tso_pid_writer_infos_reset(tso, WPAIgnoreUntilUnitStart);
         tso->in_slice = 0;
+        tso->pcr_delta += tso->pcr_delta_accumulator;
     }
     else if (!tso->in_slice && in_slice) {
         /* We changed from not in a slice to a slice. */
         tso_pid_writer_infos_reset(tso, WPAWriteUntilUnitStart);
         tso->in_slice = 1;
         tso->pts_cut = ((TsSlice *)tso->active_slice->data)->pts_end;
+        tso->pcr_delta_accumulator = 0;
     }
     gboolean write_packet = tso_should_write_packet(pidinfo, packet, tso);
     tso->bytes_read = offset;
@@ -927,7 +931,7 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
         }
     }
 
-    tso_update_timestamps_delta(tso, packet, write_packet);
+    tso_update_timestamps_delta(tso, packet);
 
     if (!write_packet)
         return tso->writer_result;
