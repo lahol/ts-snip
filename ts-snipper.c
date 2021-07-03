@@ -839,21 +839,31 @@ static void tso_rewrite_continuity(TsSnipperOutput *tso, PidInfo *pidinfo, uint8
     packet[3] = (packet[3] & 0xf0) | (info->continuity);
 }
 
+static inline gint64 tso_get_pes_pts(PidInfo *pidinfo, const uint8_t *packet)
+{
+    if (!tso_packet_is_pes(pidinfo) || !ts_get_unitstart(packet))
+        return PES_FRAME_TS_INVALID;
+    size_t pes_offset = ts_has_adaptation(packet) ? 5 + packet[4] : 4;
+    const uint8_t *pes = packet + pes_offset;
+    if (!pes_has_pts(pes))
+        return PES_FRAME_TS_INVALID;
+    return pes_get_pts(pes);
+}
+
 static gboolean tso_check_pes_timestamp(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
 {
     /* Not enough data to check timestamp. So we are fine. */
     if (tso->pts_cut == PES_FRAME_TS_INVALID || !tso_packet_is_video(pidinfo))
         return TRUE;
-    if (!ts_get_unitstart(packet)) 
+    gint64 pts = tso_get_pes_pts(pidinfo, packet);
+    if (pts == PES_FRAME_TS_INVALID)
         return TRUE;
-    size_t pes_offset = 4;
-    if (ts_has_adaptation(packet))
-        pes_offset += 1 + packet[4];
-    const uint8_t *pes = packet + pes_offset;
-    if (!pes_has_pts(pes))
-        return TRUE;
-    
-    return (pes_get_pts(pes) >= tso->pts_cut);
+    return (pts >= tso->pts_cut);
+}
+
+static gboolean tso_check_pes_timestamp_before_slice(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
+{
+    return FALSE;
 }
 
 static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
