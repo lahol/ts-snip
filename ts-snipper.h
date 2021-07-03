@@ -33,6 +33,8 @@ typedef struct {
     guint64 pcr_end;
 } TsSlice;
 
+#define TS_SLICE(ptr) ((TsSlice *)(ptr))
+
 /** Only cut on I frames.
  *  @param[in] frame_begin The id of the begin or -1 to cut from start.
  *  @param[in] frame_end The id of the end or -1 to cut until the end.

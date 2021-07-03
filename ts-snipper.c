@@ -853,7 +853,7 @@ static inline gint64 tso_get_pes_pts(PidInfo *pidinfo, const uint8_t *packet)
 static gboolean tso_check_pes_timestamp(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
 {
     /* Not enough data to check timestamp. So we are fine. */
-    if (tso->pts_cut == PES_FRAME_TS_INVALID || !tso_packet_is_video(pidinfo))
+    if (tso->pts_cut == PES_FRAME_TS_INVALID /*|| !tso_packet_is_video(pidinfo)*/)
         return TRUE;
     gint64 pts = tso_get_pes_pts(pidinfo, packet);
     if (pts == PES_FRAME_TS_INVALID)
@@ -861,9 +861,19 @@ static gboolean tso_check_pes_timestamp(PidInfo *pidinfo, const uint8_t *packet,
     return (pts >= tso->pts_cut);
 }
 
-static gboolean tso_check_pes_timestamp_before_slice(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
+static gboolean tso_check_pes_timestamp_in_active_slice(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
 {
-    return FALSE;
+    /* If we are not in a slice, or this is video, simply ignore it. */
+    if (!tso->in_slice || tso->active_slice == NULL
+            || TS_SLICE(tso->active_slice->data)->pts_begin == PES_FRAME_TS_INVALID
+            || TS_SLICE(tso->active_slice->data)->pts_end == PES_FRAME_TS_INVALID
+            || tso_packet_is_video(pidinfo))
+        return TRUE;
+    gint64 pts = tso_get_pes_pts(pidinfo, packet);
+    if (pts == PES_FRAME_TS_INVALID)
+        return TRUE;
+    return (pts >= TS_SLICE(tso->active_slice->data)->pts_begin
+            && pts < TS_SLICE(tso->active_slice->data)->pts_end);
 }
 
 static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
@@ -887,6 +897,8 @@ static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet,
         if (info->action == WPAWriteUntilUnitStart && ts_get_unitstart(packet)) {
             info->action = WPAIgnore;
         }
+        if (!tso_check_pes_timestamp_in_active_slice(pidinfo, packet, tso))
+            info->action = WPAWriteUntilUnitStart;
         return !(info->action == WPAIgnore || pidinfo->pid == 0x1FFF);
     }
 }
