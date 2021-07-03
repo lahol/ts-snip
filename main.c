@@ -9,6 +9,7 @@
 
 #include "ts-snipper.h"
 #include "files-async.h"
+#include "project.h"
 
 #define SNIPPER_ACTIVE_SLICE_BEGIN (1 << 0)
 #define SNIPPER_ACTIVE_SLICE_END (1 << 1)
@@ -38,6 +39,8 @@ struct TsSnipApp {
 
     SnipperSlice active_slice;
     SnipperSlice motion_slice;
+
+    TsSnipperProject *project;
 } app;
 
 static void rebuild_surface(void);
@@ -53,7 +56,7 @@ void main_app_init(void)
 void main_app_set_file(const char *filename)
 {
     g_mutex_lock(&app.snipper_lock);
-    ts_snipper_destroy(app.tsn);
+    ts_snipper_unref(app.tsn);
     app.tsn = ts_snipper_new(filename);
     g_mutex_unlock(&app.snipper_lock);
 }
@@ -67,7 +70,7 @@ void main_app_cleanup(void)
         cairo_surface_destroy(app.current_iframe_surf);
     if (app.current_iframe)
         av_frame_free(&app.current_iframe);
-    ts_snipper_destroy(app.tsn);
+    ts_snipper_unref(app.tsn);
 }
 
 void main_adjust_slider(void)
@@ -352,16 +355,50 @@ static void main_adjustment_value_changed(GtkAdjustment *adjustment, gpointer ni
     rebuild_surface();
 }
 
-void main_menu_file_open(void)
+void main_menu_file_save_project(void)
 {
     GtkWidget *dialog;
     gint res;
-    dialog = gtk_file_chooser_dialog_new(_("Save As"),
+    dialog = gtk_file_chooser_dialog_new(_("Save project"),
+            GTK_WINDOW(app.main_window),
+            GTK_FILE_CHOOSER_ACTION_SAVE,
+            _("_Cancel"),
+            GTK_RESPONSE_CANCEL,
+            _("_Save"),
+            GTK_RESPONSE_ACCEPT,
+            NULL);
+
+    gtk_file_chooser_set_do_overwrite_confirmation(
+            GTK_FILE_CHOOSER(dialog), TRUE);
+    res = gtk_dialog_run(GTK_DIALOG(dialog));
+    if (res == GTK_RESPONSE_ACCEPT) {
+        char *filename;
+
+        filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+
+        if (app.project == NULL) {
+            /* Set as active project */
+            app.project = ts_snipper_project_new();
+            ts_snipper_project_set_snipper(app.project, app.tsn);
+        }
+        ts_snipper_project_write(app.project, filename);
+
+        g_free(filename);
+    }
+
+    gtk_widget_destroy(dialog);
+}
+
+void main_menu_file_import(void)
+{
+    GtkWidget *dialog;
+    gint res;
+    dialog = gtk_file_chooser_dialog_new(_("Import"),
             GTK_WINDOW(app.main_window),
             GTK_FILE_CHOOSER_ACTION_OPEN,
             _("_Cancel"),
             GTK_RESPONSE_CANCEL,
-            _("_Open"),
+            _("_Import"),
             GTK_RESPONSE_ACCEPT,
             NULL);
 
@@ -380,16 +417,16 @@ void main_menu_file_open(void)
     gtk_widget_destroy(dialog);
 }
 
-void main_menu_file_save_as(void)
+void main_menu_file_export(void)
 {
     GtkWidget *dialog;
     gint res;
-    dialog = gtk_file_chooser_dialog_new(_("Save As"),
+    dialog = gtk_file_chooser_dialog_new(_("Export"),
             GTK_WINDOW(app.main_window),
             GTK_FILE_CHOOSER_ACTION_SAVE,
             _("_Cancel"),
             GTK_RESPONSE_CANCEL,
-            _("_Save"),
+            _("_Export"),
             GTK_RESPONSE_ACCEPT,
             NULL);
 
@@ -523,18 +560,25 @@ GtkWidget *main_create_main_menu(void)
     GtkWidget *item;
 
     /* File */
-    item = gtk_menu_item_new_with_label(_("Open"));
+    item = gtk_menu_item_new_with_label(_("Save project"));
     g_signal_connect_swapped(G_OBJECT(item), "activate",
-            G_CALLBACK(main_menu_file_open), NULL);
-    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_o,
-            GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_file_open), NULL);
+            G_CALLBACK(main_menu_file_save_project), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_s,
+            GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_file_save_project), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
-    item = gtk_menu_item_new_with_label(_("Save As"));
+    item = gtk_menu_item_new_with_label(_("Import"));
     g_signal_connect_swapped(G_OBJECT(item), "activate",
-            G_CALLBACK(main_menu_file_save_as), NULL);
-    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_s,
-            GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_file_save_as), NULL);
+            G_CALLBACK(main_menu_file_import), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_i,
+            GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_file_import), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label(_("Export"));
+    g_signal_connect_swapped(G_OBJECT(item), "activate",
+            G_CALLBACK(main_menu_file_export), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_e,
+            GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_file_export), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
     item = gtk_separator_menu_item_new();

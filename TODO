@@ -15,5 +15,6 @@
    * [X] Show load status in GUI.
 
  * [ ] Save project (file + slices (frame_ids))
+ * [ ] Command line parsing (for batch, project)
  * [ ] Batch processing (project + --output) for debug
  * [ ] Select pids to exclude (check at least one video + audio present, warn if not)

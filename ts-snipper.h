@@ -8,11 +8,15 @@ typedef struct _TsSnipper TsSnipper;
 /* Create a new stream info for the given file, read and analyze. */
 TsSnipper *ts_snipper_new(const gchar *filename);
 
+/* Do not call directly. Use ts_snipper_unref() instead. */
+void ts_snipper_destroy(TsSnipper *tsn);
+
+void ts_snipper_ref(TsSnipper *snipper);
+void ts_snipper_unref(TsSnipper *snipper);
+
 const gchar *ts_snipper_get_filename(TsSnipper *tsn);
 /* After analyze */
-const gchar *ts_snipper_get_sha1(TsSnipper *tsn);
-
-void ts_snipper_destroy(TsSnipper *tsn);
+const gchar *ts_snipper_get_sha1sum(TsSnipper *tsn);
 
 guint32 ts_snipper_get_iframe_count(TsSnipper *tsn);
 

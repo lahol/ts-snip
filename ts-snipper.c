@@ -69,6 +69,8 @@ struct _TsSnipper {
     uint32_t random_access_client_id;
     TsSnipperState state;
 
+    gint ref_count;
+
     gchar *filename;
     FILE *file;
     gsize file_size;
@@ -428,6 +430,8 @@ TsSnipper *ts_snipper_new(const gchar *filename)
 
     tsn->state = TsSnipperStateInitialized;
 
+    ts_snipper_ref(tsn);
+
     return tsn;
 
 err:
@@ -446,12 +450,26 @@ void ts_snipper_destroy(TsSnipper *tsn)
     }
 }
 
+void ts_snipper_ref(TsSnipper *snipper)
+{
+    if (G_LIKELY(snipper != NULL))
+        g_atomic_int_inc(&snipper->ref_count);
+}
+
+void ts_snipper_unref(TsSnipper *snipper)
+{
+    if (G_LIKELY(snipper != NULL)) {
+        if (!g_atomic_int_dec_and_test(&snipper->ref_count))
+            ts_snipper_destroy(snipper);
+    }
+}
+
 const gchar *ts_snipper_get_filename(TsSnipper *tsn)
 {
     return tsn ? tsn->filename : NULL;
 }
 
-const gchar *ts_snipper_get_sha1(TsSnipper *tsn)
+const gchar *ts_snipper_get_sha1sum(TsSnipper *tsn)
 {
     if (!tsn || tsn->state != TsSnipperStateReady)
         return NULL;
@@ -626,6 +644,8 @@ void ts_snipper_merge_slices(TsSnipper *tsn)
 
 guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_end)
 {
+    if (!tsn)
+        return TS_SLICE_ID_INVALID;
     /* FIXME Handle overlapping slices. */
     PESFrameInfo fi_begin;
     PESFrameInfo fi_end;
@@ -636,11 +656,11 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
         fi_begin.pcr = PES_FRAME_TS_INVALID;
     }
     else if (!ts_snipper_get_iframe_info(tsn, &fi_begin, frame_begin) && frame_begin != tsn->iframe_count) {
-        return -1;
+        return TS_SLICE_ID_INVALID;
     }
     else if (frame_begin == tsn->iframe_count) {
         if (!ts_snipper_get_iframe_info(tsn, &fi_begin, frame_begin - 1))
-            return -1;
+            return TS_SLICE_ID_INVALID;
         fi_begin.stream_offset_start = fi_begin.stream_offset_end;
         fi_begin.pts = PES_FRAME_ID_INVALID;
         fi_begin.pcr = PES_FRAME_TS_INVALID;
@@ -651,7 +671,7 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
         fi_end.pcr = PES_FRAME_TS_INVALID;
     }
     else if (!ts_snipper_get_iframe_info(tsn, &fi_end, frame_end)) {
-        return -1;
+        return TS_SLICE_ID_INVALID;
     }
 
     TsSlice *slice = g_new(TsSlice, 1);
