@@ -69,6 +69,7 @@ struct _TsSnipper {
     uint32_t random_access_client_id;
     TsSnipperState state;
 
+    gchar *filename;
     FILE *file;
     gsize file_size;
     gsize bytes_read;
@@ -405,7 +406,8 @@ void tsn_analyze_file(TsSnipper *tsn)
 TsSnipper *ts_snipper_new(const gchar *filename)
 {
     TsSnipper *tsn = g_malloc0(sizeof(TsSnipper));
-    if (!tsn_open_file(tsn, filename))
+    tsn->filename = g_canonicalize_filename(filename, NULL);
+    if (!tsn_open_file(tsn, tsn->filename))
         goto err;
 
     tsn->pmgr = pid_info_manager_new();
@@ -434,9 +436,15 @@ void ts_snipper_destroy(TsSnipper *tsn)
 {
     if (tsn) {
         tsn_close_file(tsn);
+        g_free(tsn->filename);
 
         g_free(tsn);
     }
+}
+
+const gchar *ts_snipper_get_filename(TsSnipper *tsn)
+{
+    return tsn ? tsn->filename : NULL;
 }
 
 gboolean ts_snipper_get_analyze_status(TsSnipper *tsn, gsize *bytes_read, gsize *bytes_total)

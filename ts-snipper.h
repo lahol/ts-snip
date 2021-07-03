@@ -8,6 +8,8 @@ typedef struct _TsSnipper TsSnipper;
 /* Create a new stream info for the given file, read and analyze. */
 TsSnipper *ts_snipper_new(const gchar *filename);
 
+const gchar *ts_snipper_get_filename(TsSnipper *tsn);
+
 void ts_snipper_destroy(TsSnipper *tsn);
 
 guint32 ts_snipper_get_iframe_count(TsSnipper *tsn);
