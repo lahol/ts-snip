@@ -31,6 +31,7 @@ typedef struct {
 typedef struct {
     GList *slices; /**< [TsSlice *] */
     GList *active_slice; /**< Pointer to next/current slice in slices. */
+    GArray *disabled_pids; /* [guint16] */
     guint32 next_slice_id;
 
     guint32 writer_client_id;
@@ -445,6 +446,10 @@ void ts_snipper_destroy(TsSnipper *tsn)
         tsn_close_file(tsn);
         g_free(tsn->filename);
         g_checksum_free(tsn->checksum);
+
+        g_list_free_full(tsn->out.slices, g_free);
+        if (tsn->out.disabled_pids)
+            g_array_free(tsn->out.disabled_pids, TRUE);
 
         g_free(tsn);
     }
@@ -917,7 +922,7 @@ static gboolean tso_check_pes_timestamp(PidInfo *pidinfo, const uint8_t *packet,
     if (!tso_packet_is_video(pidinfo)) {
         WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
         if (info && info->pts_last != PES_FRAME_TS_INVALID)
-            delay_tolerance = pts - info->pts_last;
+            delay_tolerance = (pts - info->pts_last);
     }
     return (pts + delay_tolerance >= tso->pts_cut);
 }
@@ -937,27 +942,58 @@ static gboolean tso_check_pes_timestamp_in_active_slice(PidInfo *pidinfo, const 
     WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
     gint64 delay_tolerance =
         (info && info->pts_last != PES_FRAME_TS_INVALID)
-            ? pts - info->pts_last
+            ? (pts - info->pts_last)
             : 0;
-    delay_tolerance = 0;
-    return (pts >= TS_SLICE(tso->active_slice->data)->pts_begin
+#if 0
+    if  (pts >= TS_SLICE(tso->active_slice->data)->pts_begin + delay_tolerance
+            && pts + delay_tolerance < TS_SLICE(tso->active_slice->data)->pts_end) {
+        fprintf(stderr, "[%3u]pts in slice: %" G_GINT64_FORMAT " in (%" G_GINT64_FORMAT ", %" G_GINT64_FORMAT "), tol: %"
+                G_GINT64_FORMAT "\n",
+                ts_get_pid(packet),
+                pts, TS_SLICE(tso->active_slice->data)->pts_begin,
+                TS_SLICE(tso->active_slice->data)->pts_end, delay_tolerance);
+    }
+#endif
+    return (pts >= TS_SLICE(tso->active_slice->data)->pts_begin + delay_tolerance
             && pts + delay_tolerance < TS_SLICE(tso->active_slice->data)->pts_end);
+}
+
+static gboolean tso_is_pid_disabled(TsSnipperOutput *tso, guint16 pid)
+{
+    if (tso->disabled_pids == NULL)
+        return FALSE;
+    guint i;
+    for (i = 0; i < tso->disabled_pids->len; ++i) {
+        if (g_array_index(tso->disabled_pids, guint16, i) == pid)
+            return TRUE;
+    }
+    return FALSE;
 }
 
 static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
 {
+    if (tso_is_pid_disabled(tso, ts_get_pid(packet))) {
+        return FALSE;
+    }
     if (!pidinfo) {
         return TRUE;
     }
     WriterPidInfo *info = tso_pid_writer_infos_get_for_pid(tso, pidinfo);
+    gint64 debug_pts;
 
     if (!tso->in_slice) {
         if (info->action == WPAIgnoreUntilUnitStart && ts_get_unitstart(packet)) {
             info->action = WPAWrite;
         }
         /* Check whether the timestamp is after the last cut, if not, wait until the next unit. */
-        if (!tso_check_pes_timestamp(pidinfo, packet, tso))
+        if (!tso_check_pes_timestamp(pidinfo, packet, tso)) {
             info->action = WPAIgnoreUntilUnitStart;
+#if 0
+            if ((debug_pts = tso_get_pes_pts(pidinfo, packet)) != PES_FRAME_TS_INVALID)
+                fprintf(stderr, "[%3u] Ignore packet out of slice: %" G_GINT64_FORMAT "\n",
+                        ts_get_pid(packet), debug_pts);
+#endif
+        }
         /* Already set to write or NULL packet. */
         return (info->action == WPAWrite || pidinfo->pid == 0x1FFF);
     }
@@ -965,8 +1001,14 @@ static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet,
         if (info->action == WPAWriteUntilUnitStart && ts_get_unitstart(packet)) {
             info->action = WPAIgnore;
         }
-        if (!tso_check_pes_timestamp_in_active_slice(pidinfo, packet, tso))
+        if (!tso_check_pes_timestamp_in_active_slice(pidinfo, packet, tso)) {
             info->action = WPAWriteUntilUnitStart;
+#if 0
+            if ((debug_pts = tso_get_pes_pts(pidinfo, packet)) != PES_FRAME_TS_INVALID)
+                fprintf(stderr, "[%3u] Write packet in slice     : %" G_GINT64_FORMAT "\n",
+                        ts_get_pid(packet), debug_pts);
+#endif
+        }
         return !(info->action == WPAIgnore || pidinfo->pid == 0x1FFF);
     }
 }
@@ -996,6 +1038,7 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
         tso_pid_writer_infos_reset(tso, WPAIgnoreUntilUnitStart);
         tso->in_slice = 0;
         tso->pcr_delta += tso->pcr_delta_accumulator;
+        fprintf(stderr, "updated pcr delta\n");
     }
     else if (!tso->in_slice && in_slice) {
         /* We changed from not in a slice to a slice. */
@@ -1003,11 +1046,12 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
         tso->in_slice = 1;
         tso->pts_cut = ((TsSlice *)tso->active_slice->data)->pts_end;
         tso->pcr_delta_accumulator = 0;
+        fprintf(stderr, "active slice: %" G_GINT64_FORMAT " -> %" G_GINT64_FORMAT "\n",
+                TS_SLICE(tso->active_slice->data)->pts_begin,
+                TS_SLICE(tso->active_slice->data)->pts_end);
     }
     gboolean write_packet = tso_should_write_packet(pidinfo, packet, tso);
     tso->bytes_read = offset;
-
-/*    tso_update_pts_delta(tso, offset);*/
 
     /* Check that we do not ignore pat/pmt */
     if (pidinfo) {
@@ -1134,4 +1178,31 @@ gboolean ts_snipper_write(TsSnipper *tsn, TsSnipperWriteFunc writer, gpointer us
 TsSnipperState ts_snipper_get_state(TsSnipper *tsn)
 {
     return tsn != NULL ? tsn->state : TsSnipperStateUnknown;
+}
+
+void ts_snipper_disable_pid(TsSnipper *snipper, guint16 pid)
+{
+    if (snipper == NULL)
+        return;
+    if (snipper->out.disabled_pids == NULL) {
+        snipper->out.disabled_pids = g_array_new(FALSE, FALSE, sizeof(guint16));
+    }
+
+    /* Check that pid is not already set as disabled. */
+    if (tso_is_pid_disabled(&snipper->out, pid))
+        return;
+    g_array_append_val(snipper->out.disabled_pids, pid);
+}
+
+void ts_snipper_enable_pid(TsSnipper *snipper, guint16 pid)
+{
+    if (snipper == NULL || snipper->out.disabled_pids == NULL)
+        return;
+    guint i;
+    for (i = 0; i < snipper->out.disabled_pids->len; ++i) {
+        if (g_array_index(snipper->out.disabled_pids, guint16, i) == pid) {
+            g_array_remove_index_fast(snipper->out.disabled_pids, i);
+            return;
+        }
+    }
 }

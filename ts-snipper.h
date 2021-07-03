@@ -80,3 +80,7 @@ typedef enum {
 } TsSnipperState;
 
 TsSnipperState ts_snipper_get_state(TsSnipper *tsn);
+
+/* Do not write pid, and allow it again. */
+void ts_snipper_disable_pid(TsSnipper *snipper, guint16 pid);
+void ts_snipper_enable_pid(TsSnipper *snipper, guint16 pid);

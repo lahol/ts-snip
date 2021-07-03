@@ -14,6 +14,8 @@ struct _TsSnipperProject {
     TsSnipper *tsn;
 
     GList *slices; /* SliceFrames */
+
+    GArray *disabled_pids;
 };
 
 TsSnipperProject *ts_snipper_project_new(void)
@@ -26,6 +28,9 @@ void ts_snipper_project_destroy(TsSnipperProject *project)
 {
     if (project) {
         ts_snipper_unref(project->tsn);
+        if (project->disabled_pids != NULL)
+            g_array_free(project->disabled_pids, TRUE);
+        g_list_free_full(project->slices, g_free);
         g_free(project->input_filename);
         g_free(project->sha1sum);
         g_free(project);
@@ -68,6 +73,25 @@ static void _ts_snipper_project_read_slices(TsSnipperProject *project, JsonNode 
     g_list_free(slices);
 }
 
+static void _ts_snipper_project_read_disabled_pids(TsSnipperProject *project, JsonNode *node)
+{
+    if (!JSON_NODE_HOLDS_ARRAY(node))
+        return;
+    GList *pids = json_array_get_elements(json_node_get_array(node));
+    GList *tmp;
+    if (project->disabled_pids == NULL) {
+        project->disabled_pids = g_array_new(FALSE, FALSE, sizeof(guint16));
+    }
+    else {
+        g_array_set_size(project->disabled_pids, 0);
+    }
+    for (tmp = pids; tmp; tmp = g_list_next(tmp)) {
+        guint16 entry = json_node_get_int((JsonNode *)tmp->data);
+        g_array_append_val(project->disabled_pids, entry);
+    }
+    g_list_free(pids);
+}
+
 static void ts_snipper_project_read(TsSnipperProject *project, JsonNode *root)
 {
     if (!JSON_NODE_HOLDS_OBJECT(root))
@@ -76,6 +100,10 @@ static void ts_snipper_project_read(TsSnipperProject *project, JsonNode *root)
     JsonObject *root_obj = json_node_get_object(root);
     _ts_snipper_project_read_input(project, json_object_get_member(root_obj, "input"));
     _ts_snipper_project_read_slices(project, json_object_get_member(root_obj, "slices"));
+    if (json_object_has_member(root_obj, "piddisable")) {
+        _ts_snipper_project_read_disabled_pids(project,
+                json_object_get_member(root_obj, "piddisable"));
+    }
 }
 
 TsSnipperProject *ts_snipper_project_new_from_file(const gchar *project_file)
@@ -94,6 +122,14 @@ TsSnipperProject *ts_snipper_project_new_from_file(const gchar *project_file)
     project->tsn = ts_snipper_new(project->input_filename);
     if (project->tsn == NULL)
         goto err;
+
+    if (project->disabled_pids != NULL) {
+        guint i;
+        for (i = 0; i < project->disabled_pids->len; ++i) {
+            ts_snipper_disable_pid(project->tsn,
+                    g_array_index(project->disabled_pids, guint16, i));
+        }
+    }
 
     return project;
 
