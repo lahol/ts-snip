@@ -894,13 +894,14 @@ static gboolean tso_check_pes_timestamp_in_active_slice(PidInfo *pidinfo, const 
     gint64 pts = tso_get_pes_pts(pidinfo, packet);
     if (pts == PES_FRAME_TS_INVALID)
         return TRUE;
-    
+
     WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
     gint64 delay_tolerance =
         (info && info->pts_last != PES_FRAME_TS_INVALID)
             ? pts - info->pts_last
             : 0;
-    return (pts >= TS_SLICE(tso->active_slice->data)->pts_begin + delay_tolerance
+    delay_tolerance = 0;
+    return (pts >= TS_SLICE(tso->active_slice->data)->pts_begin
             && pts + delay_tolerance < TS_SLICE(tso->active_slice->data)->pts_end);
 }
 
