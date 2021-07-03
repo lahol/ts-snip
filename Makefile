@@ -2,7 +2,7 @@ CC = gcc
 LD = gcc
 PKG_CONFIG = pkg-config
 CFLAGS += -Wall -g -D_FILE_OFFSET_BITS=64 `$(PKG_CONFIG) --cflags glib-2.0 gtk+-3.0 gdk-3.0 json-glib-1.0 x11 libavcodec libswscale`
-LIBS += -ldvbpsi -ltsanalyze `$(PKG_CONFIG) --libs glib-2.0 gtk+-3.0 gdk-3.0 json-glib-1.0 x11 libavcodec libavutil libswscale`
+LIBS += -ldvbpsi -ltsanalyze `$(PKG_CONFIG) --libs glib-2.0 gtk+-3.0 gdk-3.0 json-glib-1.0 x11 libavcodec libavutil libswscale` -lmagic
 RM ?= rm
 
 PREFIX := /usr

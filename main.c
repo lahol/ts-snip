@@ -10,6 +10,7 @@
 #include "ts-snipper.h"
 #include "files-async.h"
 #include "project.h"
+#include "filetype.h"
 
 #define SNIPPER_ACTIVE_SLICE_BEGIN (1 << 0)
 #define SNIPPER_ACTIVE_SLICE_END (1 << 1)
@@ -60,6 +61,17 @@ void main_app_set_file(const char *filename)
     app.tsn = ts_snipper_new(filename);
     if (app.project)
         ts_snipper_project_set_snipper(app.project, app.tsn);
+    g_mutex_unlock(&app.snipper_lock);
+}
+
+void main_app_set_project_file(const char *filename)
+{
+    g_mutex_lock(&app.snipper_lock);
+    ts_snipper_unref(app.tsn);
+    ts_snipper_project_destroy(app.project);
+    app.project = ts_snipper_project_new_from_file(filename);
+    app.tsn = ts_snipper_project_get_snipper(app.project);
+    ts_snipper_ref(app.tsn);
     g_mutex_unlock(&app.snipper_lock);
 }
 
@@ -748,7 +760,12 @@ int main(int argc, char **argv)
     main_init_window();
 
     if (argc >= 2) {
-        main_app_set_file(argv[1]);
+        if (ts_get_file_type(argv[1]) != TsFileTypeProject) {
+            main_app_set_file(argv[1]);
+        }
+        else {
+            main_app_set_project_file(argv[1]);
+        }
 
         if (!app.tsn) {
             fprintf(stderr, "Error opening file.\n");
