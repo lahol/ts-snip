@@ -58,6 +58,8 @@ void main_app_set_file(const char *filename)
     g_mutex_lock(&app.snipper_lock);
     ts_snipper_unref(app.tsn);
     app.tsn = ts_snipper_new(filename);
+    if (app.project)
+        ts_snipper_project_set_snipper(app.project, app.tsn);
     g_mutex_unlock(&app.snipper_lock);
 }
 
@@ -85,6 +87,98 @@ void main_adjust_slider(void)
                              100.0, /* page_increment */
                              0.0); /* page_size */
 
+}
+
+static void main_slider_set_slice_markers(guint32 frame_begin, guint32 frame_end)
+{
+    if (frame_begin != PES_FRAME_ID_INVALID)
+        gtk_scale_add_mark(GTK_SCALE(app.slider), frame_begin, GTK_POS_BOTTOM, /*"&#x21e4;"*/"[");
+    if (frame_end != PES_FRAME_ID_INVALID)
+        gtk_scale_add_mark(GTK_SCALE(app.slider), frame_end, GTK_POS_BOTTOM, /*"&#x21e5;"*/"]");
+}
+
+static gboolean refresh_slice_markers_cb(TsSlice *slice, gpointer nil)
+{
+    main_slider_set_slice_markers(slice->begin_frame, slice->end_frame);
+    return TRUE;
+}
+
+static void main_slider_refresh_slice_markers(void)
+{
+    gtk_scale_clear_marks(GTK_SCALE(app.slider));
+    ts_snipper_enum_slices(app.tsn, (TsSnipperEnumSlicesFunc)refresh_slice_markers_cb, NULL);
+}
+
+static void main_update_active_slice(guint32 frame_id, guint32 type)
+{
+    if (type & SNIPPER_ACTIVE_SLICE_BEGIN) {
+        app.active_slice.frame_begin = frame_id;
+    }
+    if (type & SNIPPER_ACTIVE_SLICE_END) {
+        app.active_slice.frame_end = frame_id;
+    }
+    app.active_slice.flags |= type;
+
+    if ((app.active_slice.flags & SNIPPER_ACTIVE_SLICE_BEGIN) &&
+            (app.active_slice.flags & SNIPPER_ACTIVE_SLICE_END) &&
+            (app.active_slice.frame_begin < app.active_slice.frame_end ||
+             app.active_slice.frame_begin == PES_FRAME_ID_INVALID ||
+             app.active_slice.frame_end == PES_FRAME_ID_INVALID)) {
+        ts_snipper_add_slice(app.tsn, app.active_slice.frame_begin, app.active_slice.frame_end);
+        main_slider_refresh_slice_markers();
+        app.active_slice.flags = 0;
+    }
+}
+
+static void main_menu_edit_slice_begin(void)
+{
+    main_update_active_slice(app.frame_id, SNIPPER_ACTIVE_SLICE_BEGIN);
+}
+
+static void main_menu_edit_slice_end(void)
+{
+    main_update_active_slice(app.frame_id, SNIPPER_ACTIVE_SLICE_END);
+}
+
+static void main_menu_edit_slice_remove(void)
+{
+    guint32 slice_id = ts_snipper_find_slice_for_frame(app.tsn, NULL, app.frame_id, FALSE);
+    if (slice_id != TS_SLICE_ID_INVALID) {
+        ts_snipper_delete_slice(app.tsn, slice_id);
+        main_slider_refresh_slice_markers();
+    }
+}
+
+static void main_menu_edit_slice_select_begin(void)
+{
+    if (!(app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID)) {
+        TsSlice slice;
+        if (ts_snipper_find_slice_for_frame(app.tsn, &slice, app.frame_id, TRUE) != TS_SLICE_ID_INVALID) {
+            app.motion_slice.frame_begin = slice.begin_frame;
+            app.motion_slice.frame_end = slice.end_frame;
+            app.motion_slice.flags |= SNIPPER_MOTION_SLICE_VALID;
+        }
+    }
+
+    if (app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID) {
+        gtk_adjustment_set_value(GTK_ADJUSTMENT(app.adjust_stream_pos), (gdouble)app.motion_slice.frame_begin);
+    }
+}
+
+static void main_menu_edit_slice_select_end(void)
+{
+    if (!(app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID)) {
+        TsSlice slice;
+        if (ts_snipper_find_slice_for_frame(app.tsn, &slice, app.frame_id, TRUE) != TS_SLICE_ID_INVALID) {
+            app.motion_slice.frame_begin = slice.begin_frame;
+            app.motion_slice.frame_end = slice.end_frame;
+            app.motion_slice.flags |= SNIPPER_MOTION_SLICE_VALID;
+        }
+    }
+
+    if (app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID) {
+        gtk_adjustment_set_value(GTK_ADJUSTMENT(app.adjust_stream_pos), (gdouble)app.motion_slice.frame_end);
+    }
 }
 
 static void update_drawing_area(void)
@@ -118,6 +212,14 @@ static void main_file_analyze_result_func(GObject *source_object,
 
     gtk_widget_hide(app.progress_bar);
     gtk_adjustment_set_value(GTK_ADJUSTMENT(app.adjust_stream_pos), 0.0);
+
+    if (app.project) {
+        if (!ts_snipper_project_validate(app.project))
+            fprintf(stderr, "WARNING: Input has changed.\n");
+        ts_snipper_project_apply_slices(app.project);
+        main_slider_refresh_slice_markers();
+    }
+
     update_drawing_area();
 }
 
@@ -355,6 +457,41 @@ static void main_adjustment_value_changed(GtkAdjustment *adjustment, gpointer ni
     rebuild_surface();
 }
 
+void main_menu_file_open_project(void)
+{
+    GtkWidget *dialog;
+    gint res;
+    dialog = gtk_file_chooser_dialog_new(_("Open project"),
+            GTK_WINDOW(app.main_window),
+            GTK_FILE_CHOOSER_ACTION_OPEN,
+            _("_Cancel"),
+            GTK_RESPONSE_CANCEL,
+            _("_Open"),
+            GTK_RESPONSE_ACCEPT,
+            NULL);
+
+    res = gtk_dialog_run(GTK_DIALOG(dialog));
+    if (res == GTK_RESPONSE_ACCEPT) {
+        char *filename;
+
+        filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        if (app.project)
+            ts_snipper_project_destroy(app.project);
+        ts_snipper_unref(app.tsn);
+        app.project = ts_snipper_project_new_from_file(filename);
+
+        if (app.project) {
+            app.tsn = ts_snipper_project_get_snipper(app.project);
+            ts_snipper_ref(app.tsn);
+            main_analyze_file_async();
+        }
+
+        g_free(filename);
+    }
+
+    gtk_widget_destroy(dialog);
+}
+
 void main_menu_file_save_project(void)
 {
     GtkWidget *dialog;
@@ -451,98 +588,6 @@ void main_menu_file_quit(void)
     gtk_main_quit();
 }
 
-static void main_slider_set_slice_markers(guint32 frame_begin, guint32 frame_end)
-{
-    if (frame_begin != PES_FRAME_ID_INVALID)
-        gtk_scale_add_mark(GTK_SCALE(app.slider), frame_begin, GTK_POS_BOTTOM, /*"&#x21e4;"*/"[");
-    if (frame_end != PES_FRAME_ID_INVALID)
-        gtk_scale_add_mark(GTK_SCALE(app.slider), frame_end, GTK_POS_BOTTOM, /*"&#x21e5;"*/"]");
-}
-
-static gboolean refresh_slice_markers_cb(TsSlice *slice, gpointer nil)
-{
-    main_slider_set_slice_markers(slice->begin_frame, slice->end_frame);
-    return TRUE;
-}
-
-static void main_slider_refresh_slice_markers(void)
-{
-    gtk_scale_clear_marks(GTK_SCALE(app.slider));
-    ts_snipper_enum_slices(app.tsn, (TsSnipperEnumSlicesFunc)refresh_slice_markers_cb, NULL);
-}
-
-static void main_update_active_slice(guint32 frame_id, guint32 type)
-{
-    if (type & SNIPPER_ACTIVE_SLICE_BEGIN) {
-        app.active_slice.frame_begin = frame_id;
-    }
-    if (type & SNIPPER_ACTIVE_SLICE_END) {
-        app.active_slice.frame_end = frame_id;
-    }
-    app.active_slice.flags |= type;
-
-    if ((app.active_slice.flags & SNIPPER_ACTIVE_SLICE_BEGIN) &&
-            (app.active_slice.flags & SNIPPER_ACTIVE_SLICE_END) &&
-            (app.active_slice.frame_begin < app.active_slice.frame_end ||
-             app.active_slice.frame_begin == PES_FRAME_ID_INVALID ||
-             app.active_slice.frame_end == PES_FRAME_ID_INVALID)) {
-        ts_snipper_add_slice(app.tsn, app.active_slice.frame_begin, app.active_slice.frame_end);
-        main_slider_refresh_slice_markers();
-        app.active_slice.flags = 0;
-    }
-}
-
-static void main_menu_edit_slice_begin(void)
-{
-    main_update_active_slice(app.frame_id, SNIPPER_ACTIVE_SLICE_BEGIN);
-}
-
-static void main_menu_edit_slice_end(void)
-{
-    main_update_active_slice(app.frame_id, SNIPPER_ACTIVE_SLICE_END);
-}
-
-static void main_menu_edit_slice_remove(void)
-{
-    guint32 slice_id = ts_snipper_find_slice_for_frame(app.tsn, NULL, app.frame_id, FALSE);
-    if (slice_id != TS_SLICE_ID_INVALID) {
-        ts_snipper_delete_slice(app.tsn, slice_id);
-        main_slider_refresh_slice_markers();
-    }
-}
-
-static void main_menu_edit_slice_select_begin(void)
-{
-    if (!(app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID)) {
-        TsSlice slice;
-        if (ts_snipper_find_slice_for_frame(app.tsn, &slice, app.frame_id, TRUE) != TS_SLICE_ID_INVALID) {
-            app.motion_slice.frame_begin = slice.begin_frame;
-            app.motion_slice.frame_end = slice.end_frame;
-            app.motion_slice.flags |= SNIPPER_MOTION_SLICE_VALID;
-        }
-    }
-
-    if (app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID) {
-        gtk_adjustment_set_value(GTK_ADJUSTMENT(app.adjust_stream_pos), (gdouble)app.motion_slice.frame_begin);
-    }
-}
-
-static void main_menu_edit_slice_select_end(void)
-{
-    if (!(app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID)) {
-        TsSlice slice;
-        if (ts_snipper_find_slice_for_frame(app.tsn, &slice, app.frame_id, TRUE) != TS_SLICE_ID_INVALID) {
-            app.motion_slice.frame_begin = slice.begin_frame;
-            app.motion_slice.frame_end = slice.end_frame;
-            app.motion_slice.flags |= SNIPPER_MOTION_SLICE_VALID;
-        }
-    }
-
-    if (app.motion_slice.flags & SNIPPER_MOTION_SLICE_VALID) {
-        gtk_adjustment_set_value(GTK_ADJUSTMENT(app.adjust_stream_pos), (gdouble)app.motion_slice.frame_end);
-    }
-}
-
 void _main_add_accelerator(GtkWidget *item, const char *accel_signal, GtkAccelGroup *accel_group,
         guint accel_key, GdkModifierType accel_mods, GtkAccelFlags accel_flags,
         GCallback accel_cb, gpointer accel_data)
@@ -560,6 +605,13 @@ GtkWidget *main_create_main_menu(void)
     GtkWidget *item;
 
     /* File */
+    item = gtk_menu_item_new_with_label(_("Open project"));
+    g_signal_connect_swapped(G_OBJECT(item), "activate",
+            G_CALLBACK(main_menu_file_open_project), NULL);
+    _main_add_accelerator(item, "activate", app.accelerator_group, GDK_KEY_o,
+            GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, G_CALLBACK(main_menu_file_open_project), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
     item = gtk_menu_item_new_with_label(_("Save project"));
     g_signal_connect_swapped(G_OBJECT(item), "activate",
             G_CALLBACK(main_menu_file_save_project), NULL);

@@ -32,11 +32,50 @@ void ts_snipper_project_destroy(TsSnipperProject *project)
     }
 }
 
+static void _ts_snipper_project_read_input(TsSnipperProject *project, JsonNode *node)
+{
+    if (!JSON_NODE_HOLDS_OBJECT(node))
+        return;
+    JsonObject *obj = json_node_get_object(node);
+    if (json_object_has_member(obj, "path")) {
+        project->input_filename = g_strdup(json_object_get_string_member(obj, "path"));
+    }
+    if (json_object_has_member(obj, "sha1")) {
+        project->sha1sum = g_strdup(json_object_get_string_member(obj, "sha1"));
+    }
+}
+
+static void _ts_snipper_project_read_slices(TsSnipperProject *project, JsonNode *node)
+{
+    if (!JSON_NODE_HOLDS_ARRAY(node))
+        return;
+    GList *slices = json_array_get_elements(json_node_get_array(node));
+    GList *tmp;
+    JsonArray *slice;
+    SliceFrames *slice_frames;
+    for (tmp = slices; tmp; tmp = g_list_next(tmp)) {
+        if (!JSON_NODE_HOLDS_ARRAY(tmp->data))
+            continue;
+        slice = json_node_get_array((JsonNode *)tmp->data);
+        if (slice) {
+            slice_frames = g_new0(SliceFrames, 1);
+            slice_frames->begin = json_array_get_int_element(slice, 0);
+            slice_frames->end = json_array_get_int_element(slice, 1);
+            project->slices = g_list_prepend(project->slices, slice_frames);
+        }
+    }
+
+    g_list_free(slices);
+}
+
 static void ts_snipper_project_read(TsSnipperProject *project, JsonNode *root)
 {
     if (!JSON_NODE_HOLDS_OBJECT(root))
         return;
 
+    JsonObject *root_obj = json_node_get_object(root);
+    _ts_snipper_project_read_input(project, json_object_get_member(root_obj, "input"));
+    _ts_snipper_project_read_slices(project, json_object_get_member(root_obj, "slices"));
 }
 
 TsSnipperProject *ts_snipper_project_new_from_file(const gchar *project_file)
@@ -50,6 +89,7 @@ TsSnipperProject *ts_snipper_project_new_from_file(const gchar *project_file)
 
     JsonNode *root = json_parser_get_root(parser);
     ts_snipper_project_read(project, root);
+    g_object_unref(parser);
 
     project->tsn = ts_snipper_new(project->input_filename);
     if (project->tsn == NULL)
@@ -89,7 +129,7 @@ gboolean ts_snipper_project_validate(TsSnipperProject *project)
                            ts_snipper_get_sha1sum(project->tsn)));
 }
 
-void ts_snipper_apply_slices(TsSnipperProject *project)
+void ts_snipper_project_apply_slices(TsSnipperProject *project)
 {
     g_return_if_fail(project != NULL);
     GList *tmp;

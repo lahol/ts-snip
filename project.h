@@ -35,7 +35,7 @@ gboolean ts_snipper_project_validate(TsSnipperProject *project);
 /** @brief Apply all slices to the snipper.
  *  Has to be done after the snipper is done analyzing.
  */
-void ts_snipper_apply_slices(TsSnipperProject *project);
+void ts_snipper_project_apply_slices(TsSnipperProject *project);
 
 /** @brief Write the project to a file.
  */
