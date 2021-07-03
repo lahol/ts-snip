@@ -25,6 +25,7 @@ typedef enum {
 typedef struct {
     WriterPidAction action;
     guint8 continuity;
+    gint64 pts_last; /* last pts of this pid */
 } WriterPidInfo;
 
 typedef struct {
@@ -732,6 +733,9 @@ static void tso_pid_writer_infos_init(TsSnipperOutput *tso, PidInfoManager *pmgr
     tso->pid_count = pid_info_manager_get_pid_count(pmgr);
     tso->pid_writer_infos = g_new0(WriterPidInfo, tso->pid_count);
     tso->pids_seen = 0;
+    gsize j;
+    for (j = 0; j < tso->pid_count; ++j)
+        tso->pid_writer_infos[j].pts_last = PES_FRAME_TS_INVALID;
 }
 
 static void tso_pid_writer_infos_cleanup(TsSnipperOutput *tso, PidInfoManager *pmgr)
@@ -783,6 +787,17 @@ static gboolean tso_packet_is_video(PidInfo *pidinfo)
              pidinfo->type == PID_TYPE_VIDEO_11172));
 }
 
+static inline gint64 tso_get_pes_pts(PidInfo *pidinfo, const uint8_t *packet)
+{
+    if (!tso_packet_is_pes(pidinfo) || !ts_get_unitstart(packet))
+        return PES_FRAME_TS_INVALID;
+    size_t pes_offset = ts_has_adaptation(packet) ? 5 + packet[4] : 4;
+    const uint8_t *pes = packet + pes_offset;
+    if (!pes_has_pts(pes))
+        return PES_FRAME_TS_INVALID;
+    return pes_get_pts(pes);
+}
+
 static void tso_update_timestamps_delta(TsSnipperOutput *tso,
                                         const uint8_t *packet)
 {
@@ -796,6 +811,17 @@ static void tso_update_timestamps_delta(TsSnipperOutput *tso,
         tso->pcr_last = tstmp;
         tso->pcr_present = 1;
     }
+}
+
+static void tso_update_pes_pts(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
+{
+    gint64 pts = tso_get_pes_pts(pidinfo, packet);
+    if (pts == PES_FRAME_TS_INVALID)
+        return;
+    WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
+    if (!info)
+        return;
+    info->pts_last = pts;
 }
 
 /* Rewrite on basis of pcr differences. */
@@ -839,17 +865,6 @@ static void tso_rewrite_continuity(TsSnipperOutput *tso, PidInfo *pidinfo, uint8
     packet[3] = (packet[3] & 0xf0) | (info->continuity);
 }
 
-static inline gint64 tso_get_pes_pts(PidInfo *pidinfo, const uint8_t *packet)
-{
-    if (!tso_packet_is_pes(pidinfo) || !ts_get_unitstart(packet))
-        return PES_FRAME_TS_INVALID;
-    size_t pes_offset = ts_has_adaptation(packet) ? 5 + packet[4] : 4;
-    const uint8_t *pes = packet + pes_offset;
-    if (!pes_has_pts(pes))
-        return PES_FRAME_TS_INVALID;
-    return pes_get_pts(pes);
-}
-
 static gboolean tso_check_pes_timestamp(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
 {
     /* Not enough data to check timestamp. So we are fine. */
@@ -858,7 +873,14 @@ static gboolean tso_check_pes_timestamp(PidInfo *pidinfo, const uint8_t *packet,
     gint64 pts = tso_get_pes_pts(pidinfo, packet);
     if (pts == PES_FRAME_TS_INVALID)
         return TRUE;
-    return (pts >= tso->pts_cut);
+    /* Audio might be slightly delayed. Add a tolerance, which is the time to the last sample. */
+    gint64 delay_tolerance = 0;
+    if (!tso_packet_is_video(pidinfo)) {
+        WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
+        if (info && info->pts_last != PES_FRAME_TS_INVALID)
+            delay_tolerance = pts - info->pts_last;
+    }
+    return (pts + delay_tolerance >= tso->pts_cut);
 }
 
 static gboolean tso_check_pes_timestamp_in_active_slice(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
@@ -872,8 +894,14 @@ static gboolean tso_check_pes_timestamp_in_active_slice(PidInfo *pidinfo, const 
     gint64 pts = tso_get_pes_pts(pidinfo, packet);
     if (pts == PES_FRAME_TS_INVALID)
         return TRUE;
-    return (pts >= TS_SLICE(tso->active_slice->data)->pts_begin
-            && pts < TS_SLICE(tso->active_slice->data)->pts_end);
+    
+    WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
+    gint64 delay_tolerance =
+        (info && info->pts_last != PES_FRAME_TS_INVALID)
+            ? pts - info->pts_last
+            : 0;
+    return (pts >= TS_SLICE(tso->active_slice->data)->pts_begin + delay_tolerance
+            && pts + delay_tolerance < TS_SLICE(tso->active_slice->data)->pts_end);
 }
 
 static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
@@ -954,6 +982,7 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
     }
 
     tso_update_timestamps_delta(tso, packet);
+    tso_update_pes_pts(pidinfo, packet, tso);
 
     if (!write_packet)
         return tso->writer_result;
