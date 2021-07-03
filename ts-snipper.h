@@ -9,6 +9,8 @@ typedef struct _TsSnipper TsSnipper;
 TsSnipper *ts_snipper_new(const gchar *filename);
 
 const gchar *ts_snipper_get_filename(TsSnipper *tsn);
+/* After analyze */
+const gchar *ts_snipper_get_sha1(TsSnipper *tsn);
 
 void ts_snipper_destroy(TsSnipper *tsn);
 

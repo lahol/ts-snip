@@ -73,6 +73,7 @@ struct _TsSnipper {
     FILE *file;
     gsize file_size;
     gsize bytes_read;
+    GChecksum *checksum;
 
     GArray *frame_infos;
     guint32 iframe_count;
@@ -334,6 +335,7 @@ static bool tsn_handle_packet(PidInfo *pidinfo, const uint8_t *packet, const siz
     if (!tsn)
         return true;
     tsn->bytes_read = offset;
+    g_checksum_update(tsn->checksum, packet, TS_SIZE);
     if (!pidinfo)
         return true;
 
@@ -407,6 +409,7 @@ TsSnipper *ts_snipper_new(const gchar *filename)
 {
     TsSnipper *tsn = g_malloc0(sizeof(TsSnipper));
     tsn->filename = g_canonicalize_filename(filename, NULL);
+    tsn->checksum = g_checksum_new(G_CHECKSUM_SHA1);
     if (!tsn_open_file(tsn, tsn->filename))
         goto err;
 
@@ -437,6 +440,7 @@ void ts_snipper_destroy(TsSnipper *tsn)
     if (tsn) {
         tsn_close_file(tsn);
         g_free(tsn->filename);
+        g_checksum_free(tsn->checksum);
 
         g_free(tsn);
     }
@@ -445,6 +449,13 @@ void ts_snipper_destroy(TsSnipper *tsn)
 const gchar *ts_snipper_get_filename(TsSnipper *tsn)
 {
     return tsn ? tsn->filename : NULL;
+}
+
+const gchar *ts_snipper_get_sha1(TsSnipper *tsn)
+{
+    if (!tsn || tsn->state != TsSnipperStateReady)
+        return NULL;
+    return g_checksum_get_string(tsn->checksum);
 }
 
 gboolean ts_snipper_get_analyze_status(TsSnipper *tsn, gsize *bytes_read, gsize *bytes_total)
