@@ -61,6 +61,9 @@ typedef struct {
                                      later. */
     gint64 pts_delta_tolerance; /* Tolerance for non-video streams, required because of drift
                                    between pcr and pts. */
+    gint64 pcr_stream_first; /**< First pcr/pts pair */
+    gint64 pts_stream_first;
+
     gint64 pcr_last;
     /* Next pts of the frame after the active slice */
     gint64 pts_cut;
@@ -285,9 +288,29 @@ static void tsn_read_buffered(TsSnipper *snipper,
     g_mutex_unlock(&snipper->file_lock);
 }
 
+static void tso_check_first_pcr_pts(TsSnipperOutput *tso,
+                                    gint64 pcr,
+                                    gint64 pts)
+{
+    /* If both are set, do noting. */
+    if (tso->pts_stream_first != PES_FRAME_TS_INVALID
+            && tso->pcr_stream_first != PES_FRAME_TS_INVALID)
+        return;
+    /* Update the timestamps until both are set, in order to get a pair close to each other. */
+    if (pcr != PES_FRAME_TS_INVALID)
+        tso->pcr_stream_first = pcr;
+    if (pts != PES_FRAME_TS_INVALID)
+        tso->pts_stream_first = pts;
+#if 1
+    fprintf(stderr, "First pcr/pts: %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT "\n",
+            tso->pcr_stream_first, tso->pts_stream_first);
+#endif
+}
+
 typedef void (*PESFinishedFunc)(PESData *, gpointer);
 
-static void _tsn_handle_pes(PidInfo *pidinfo,
+static void _tsn_handle_pes(TsSnipper *tsn,
+                            PidInfo *pidinfo,
                             uint32_t client_id,
                             const uint8_t *packet,
                             const size_t offset,
@@ -308,6 +331,7 @@ static void _tsn_handle_pes(PidInfo *pidinfo,
         pes_offset += 1 + packet[4];
         if (tsaf_has_pcr(packet)) {
             pcr = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet);
+            tso_check_first_pcr_pts(&tsn->out, pcr, PES_FRAME_TS_INVALID);
         }
     }
 
@@ -329,6 +353,7 @@ static void _tsn_handle_pes(PidInfo *pidinfo,
         if (pes_has_pts(pes_data)) {
             pes->pts = pes_get_pts(pes_data);
             pes->have_pts = 1;
+            tso_check_first_pcr_pts(&tsn->out, pcr, pes->pts);
         }
         if (pes_has_dts(pes_data)) {
             pes->dts = pes_get_dts(pes_data);
@@ -358,13 +383,13 @@ static bool tsn_handle_packet(PidInfo *pidinfo, const uint8_t *packet, const siz
     if (pidinfo->type == PID_TYPE_VIDEO_13818) {
         if (!tsn->video_pid)
             tsn->video_pid = pidinfo->pid;
-        _tsn_handle_pes(pidinfo, tsn->analyzer_client_id, packet, offset,
+        _tsn_handle_pes(tsn, pidinfo, tsn->analyzer_client_id, packet, offset,
                 (PESFinishedFunc)pes_data_analyze_video_13818, tsn);
     }
     else if (pidinfo->type == PID_TYPE_VIDEO_14496) {
         if (!tsn->video_pid)
             tsn->video_pid = pidinfo->pid;
-        _tsn_handle_pes(pidinfo, tsn->analyzer_client_id, packet, offset,
+        _tsn_handle_pes(tsn, pidinfo, tsn->analyzer_client_id, packet, offset,
                 (PESFinishedFunc)pes_data_analyze_video_14496, tsn);
     }
 
@@ -402,6 +427,9 @@ void tsn_analyze_file(TsSnipper *tsn)
         return;
 
     tsn->state = TsSnipperStateAnalyzing;
+
+    tsn->out.pts_stream_first = PES_FRAME_TS_INVALID;
+    tsn->out.pcr_stream_first = PES_FRAME_TS_INVALID;
 
     static TsAnalyzerClass tscls = {
         .handle_packet = (TsHandlePacketFunc)tsn_handle_packet,
@@ -562,7 +590,7 @@ static bool _ts_get_iframe_handle_packet(PidInfo *pidinfo, const uint8_t *packet
         return false;
 
     if (pidinfo->type == PID_TYPE_VIDEO_13818 || pidinfo->type == PID_TYPE_VIDEO_14496) {
-        _tsn_handle_pes(pidinfo, fifi->tsn->random_access_client_id, packet, offset,
+        _tsn_handle_pes(fifi->tsn, pidinfo, fifi->tsn->random_access_client_id, packet, offset,
                 (PESFinishedFunc)_ts_get_iframe_handle_pes, fifi);
         if (fifi->package_found) {
             pid_info_clear_private_data(pidinfo, fifi->tsn->random_access_client_id);
@@ -670,8 +698,8 @@ guint32 ts_snipper_add_slice(TsSnipper *tsn, guint32 frame_begin, guint32 frame_
     if (frame_begin == PES_FRAME_ID_INVALID) {
         fi_begin.stream_offset_dangling_bframe = 0;
         fi_begin.stream_offset_start = 0;
-        fi_begin.pts = PES_FRAME_TS_INVALID;
-        fi_begin.pcr = PES_FRAME_TS_INVALID;
+        fi_begin.pts = tsn->out.pts_stream_first;
+        fi_begin.pcr = tsn->out.pcr_stream_first;
     }
     else if (!ts_snipper_get_iframe_info(tsn, &fi_begin, frame_begin) && frame_begin != tsn->iframe_count) {
         return TS_SLICE_ID_INVALID;
