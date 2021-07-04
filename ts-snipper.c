@@ -849,9 +849,9 @@ static void tso_update_timestamps_delta(TsSnipperOutput *tso,
     if (ts_has_adaptation(packet) && tsaf_has_pcr(packet)) {
         tstmp = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet);
         /* Only accumulate deltas of packets that are not written. */
-        if (tso->pcr_present && tso->in_slice) {
+/*        if (tso->pcr_present && tso->in_slice) {
             tso->pcr_delta_accumulator += tstmp - tso->pcr_last;
-        }
+        }*/
         tso->pcr_last = tstmp;
         tso->pcr_present = 1;
     }
@@ -1038,14 +1038,18 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
         tso_pid_writer_infos_reset(tso, WPAIgnoreUntilUnitStart);
         tso->in_slice = 0;
         tso->pcr_delta += tso->pcr_delta_accumulator;
-        fprintf(stderr, "updated pcr delta\n");
+        fprintf(stderr, "updated pcr delta: %" G_GINT64_FORMAT " accum %" G_GINT64_FORMAT "\n",
+                tso->pcr_delta, tso->pcr_delta_accumulator);
     }
     else if (!tso->in_slice && in_slice) {
         /* We changed from not in a slice to a slice. */
         tso_pid_writer_infos_reset(tso, WPAWriteUntilUnitStart);
         tso->in_slice = 1;
         tso->pts_cut = ((TsSlice *)tso->active_slice->data)->pts_end;
-        tso->pcr_delta_accumulator = 0;
+        /* FIXME: Use the accumulator, but take the correct pcr, i.e., not already the last
+         * before each slice. */
+        tso->pcr_delta_accumulator = TS_SLICE(tso->active_slice->data)->pcr_begin != PES_FRAME_TS_INVALID
+            ? TS_SLICE(tso->active_slice->data)->pcr_end - TS_SLICE(tso->active_slice->data)->pcr_begin : 0;
         fprintf(stderr, "active slice: %" G_GINT64_FORMAT " -> %" G_GINT64_FORMAT "\n",
                 TS_SLICE(tso->active_slice->data)->pts_begin,
                 TS_SLICE(tso->active_slice->data)->pts_end);
