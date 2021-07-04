@@ -59,6 +59,8 @@ typedef struct {
     gint64 pcr_delta_accumulator; /* During an active slice, accumulate the deltas. Necessary
                                      for samples with a timestamp before the slice, which occur
                                      later. */
+    gint64 pts_delta_tolerance; /* Tolerance for non-video streams, required because of drift
+                                   between pcr and pts. */
     gint64 pcr_last;
     /* Next pts of the frame after the active slice */
     gint64 pts_cut;
@@ -174,14 +176,25 @@ void pes_data_analyze_video_13818(PESData *pes, TsSnipper *tsn)
                 g_array_append_val(tsn->frame_infos, frame_info);
                 g_mutex_unlock(&tsn->data_lock);
                 tsn->dangling_bframe_present = FALSE;
+#if 0
+                fprintf(stderr, "I frame %" G_GINT64_FORMAT " (%u) delta to pcr %" G_GINT64_FORMAT "\n",
+                        pes->pts, frame_info.frame_number,
+                        pes->pts - (pes->pcr / 300));
+#endif
                 break;
             }
             else if (pictype == 2) {
                 /* P frames reset the dangling B frame also. */
                 tsn->dangling_bframe_present = FALSE;
+#if 0
+                fprintf(stderr, "P frame %" G_GINT64_FORMAT "\n", pes->pts);
+#endif
             }
             else if (pictype == 3) {
                 /* Only remember the first dangling B frame. */
+#if 0
+                fprintf(stderr, "B frame %" G_GINT64_FORMAT "\n", pes->pts);
+#endif
                 if (!tsn->dangling_bframe_present) {
                     tsn->dangling_bframe_start = pes->packet_start;
                     tsn->dangling_bframe_present = TRUE;
@@ -842,6 +855,7 @@ static inline gint64 tso_get_pes_pts(PidInfo *pidinfo, const uint8_t *packet)
     return pes_get_pts(pes);
 }
 
+#if 0
 static void tso_update_timestamps_delta(TsSnipperOutput *tso,
                                         const uint8_t *packet)
 {
@@ -849,13 +863,14 @@ static void tso_update_timestamps_delta(TsSnipperOutput *tso,
     if (ts_has_adaptation(packet) && tsaf_has_pcr(packet)) {
         tstmp = tsaf_get_pcr(packet) * 300 + tsaf_get_pcrext(packet);
         /* Only accumulate deltas of packets that are not written. */
-/*        if (tso->pcr_present && tso->in_slice) {
+        if (tso->pcr_present && tso->in_slice) {
             tso->pcr_delta_accumulator += tstmp - tso->pcr_last;
-        }*/
+        }
         tso->pcr_last = tstmp;
         tso->pcr_present = 1;
     }
 }
+#endif
 
 static void tso_update_pes_pts(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
 {
@@ -889,6 +904,10 @@ static void tso_rewrite_timestamps(TsSnipperOutput *tso, PidInfo *pidinfo, uint8
     /* pcr has a frequency of 300 higher than pts/dts */
     gint64 delta = tso->pcr_delta / 300;
     if (pes_has_pts(pes)) {
+#if 0
+        fprintf(stderr, "[%3u] rewrite %" G_GINT64_FORMAT " -> %" G_GINT64_FORMAT "\n",
+                ts_get_pid(packet), pes_get_pts(pes), pes_get_pts(pes) - delta);
+#endif
         pes_set_pts(pes, pes_get_pts(pes) - delta);
     }
     if (pes_has_dts(pes)) {
@@ -917,14 +936,10 @@ static gboolean tso_check_pes_timestamp(PidInfo *pidinfo, const uint8_t *packet,
     gint64 pts = tso_get_pes_pts(pidinfo, packet);
     if (pts == PES_FRAME_TS_INVALID)
         return TRUE;
-    /* Audio might be slightly delayed. Add a tolerance, which is the time to the last sample. */
-    gint64 delay_tolerance = 0;
-    if (!tso_packet_is_video(pidinfo)) {
-        WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
-        if (info && info->pts_last != PES_FRAME_TS_INVALID)
-            delay_tolerance = (pts - info->pts_last);
-    }
-    return (pts + delay_tolerance >= tso->pts_cut);
+    /* Adapt to tolerance between pcr and pts in video */
+    gint64 pts_pcr_tolerance = tso_packet_is_video(pidinfo) ? 0 : tso->pts_delta_tolerance;
+
+    return (pts + pts_pcr_tolerance >= tso->pts_cut);
 }
 
 static gboolean tso_check_pes_timestamp_in_active_slice(PidInfo *pidinfo, const uint8_t *packet, TsSnipperOutput *tso)
@@ -939,23 +954,8 @@ static gboolean tso_check_pes_timestamp_in_active_slice(PidInfo *pidinfo, const 
     if (pts == PES_FRAME_TS_INVALID)
         return TRUE;
 
-    WriterPidInfo *info = pid_info_get_private_data(pidinfo, tso->writer_client_id);
-    gint64 delay_tolerance =
-        (info && info->pts_last != PES_FRAME_TS_INVALID)
-            ? (pts - info->pts_last)
-            : 0;
-#if 0
-    if  (pts >= TS_SLICE(tso->active_slice->data)->pts_begin + delay_tolerance
-            && pts + delay_tolerance < TS_SLICE(tso->active_slice->data)->pts_end) {
-        fprintf(stderr, "[%3u]pts in slice: %" G_GINT64_FORMAT " in (%" G_GINT64_FORMAT ", %" G_GINT64_FORMAT "), tol: %"
-                G_GINT64_FORMAT "\n",
-                ts_get_pid(packet),
-                pts, TS_SLICE(tso->active_slice->data)->pts_begin,
-                TS_SLICE(tso->active_slice->data)->pts_end, delay_tolerance);
-    }
-#endif
-    return (pts >= TS_SLICE(tso->active_slice->data)->pts_begin + delay_tolerance
-            && pts + delay_tolerance < TS_SLICE(tso->active_slice->data)->pts_end);
+   return (pts >= TS_SLICE(tso->active_slice->data)->pts_begin
+            && pts < TS_SLICE(tso->active_slice->data)->pts_end);
 }
 
 static gboolean tso_is_pid_disabled(TsSnipperOutput *tso, guint16 pid)
@@ -979,7 +979,9 @@ static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet,
         return TRUE;
     }
     WriterPidInfo *info = tso_pid_writer_infos_get_for_pid(tso, pidinfo);
+#if 0
     gint64 debug_pts;
+#endif
 
     if (!tso->in_slice) {
         if (info->action == WPAIgnoreUntilUnitStart && ts_get_unitstart(packet)) {
@@ -988,13 +990,13 @@ static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet,
         /* Check whether the timestamp is after the last cut, if not, wait until the next unit. */
         if (!tso_check_pes_timestamp(pidinfo, packet, tso)) {
             info->action = WPAIgnoreUntilUnitStart;
-#if 0
-            if ((debug_pts = tso_get_pes_pts(pidinfo, packet)) != PES_FRAME_TS_INVALID)
-                fprintf(stderr, "[%3u] Ignore packet out of slice: %" G_GINT64_FORMAT "\n",
-                        ts_get_pid(packet), debug_pts);
-#endif
         }
-        /* Already set to write or NULL packet. */
+#if 0
+        if ((debug_pts = tso_get_pes_pts(pidinfo, packet)) != PES_FRAME_TS_INVALID)
+            fprintf(stderr, "[%3u] %c packet out of slice: %" G_GINT64_FORMAT "\n",
+                    ts_get_pid(packet), info->action == WPAWrite ? 'W' : 'I', debug_pts);
+#endif
+         /* Already set to write or NULL packet. */
         return (info->action == WPAWrite || pidinfo->pid == 0x1FFF);
     }
     else {
@@ -1003,12 +1005,12 @@ static gboolean tso_should_write_packet(PidInfo *pidinfo, const uint8_t *packet,
         }
         if (!tso_check_pes_timestamp_in_active_slice(pidinfo, packet, tso)) {
             info->action = WPAWriteUntilUnitStart;
-#if 0
-            if ((debug_pts = tso_get_pes_pts(pidinfo, packet)) != PES_FRAME_TS_INVALID)
-                fprintf(stderr, "[%3u] Write packet in slice     : %" G_GINT64_FORMAT "\n",
-                        ts_get_pid(packet), debug_pts);
-#endif
         }
+#if 0
+        if ((debug_pts = tso_get_pes_pts(pidinfo, packet)) != PES_FRAME_TS_INVALID)
+            fprintf(stderr, "[%3u] %c packet in slice    : %" G_GINT64_FORMAT "\n",
+                    ts_get_pid(packet), info->action == WPAIgnore ? 'I' : 'W', debug_pts);
+#endif
         return !(info->action == WPAIgnore || pidinfo->pid == 0x1FFF);
     }
 }
@@ -1038,8 +1040,10 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
         tso_pid_writer_infos_reset(tso, WPAIgnoreUntilUnitStart);
         tso->in_slice = 0;
         tso->pcr_delta += tso->pcr_delta_accumulator;
+#if 0
         fprintf(stderr, "updated pcr delta: %" G_GINT64_FORMAT " accum %" G_GINT64_FORMAT "\n",
                 tso->pcr_delta, tso->pcr_delta_accumulator);
+#endif
     }
     else if (!tso->in_slice && in_slice) {
         /* We changed from not in a slice to a slice. */
@@ -1050,9 +1054,18 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
          * before each slice. */
         tso->pcr_delta_accumulator = TS_SLICE(tso->active_slice->data)->pcr_begin != PES_FRAME_TS_INVALID
             ? TS_SLICE(tso->active_slice->data)->pcr_end - TS_SLICE(tso->active_slice->data)->pcr_begin : 0;
-        fprintf(stderr, "active slice: %" G_GINT64_FORMAT " -> %" G_GINT64_FORMAT "\n",
+        tso->pts_delta_tolerance = TS_SLICE(tso->active_slice->data)->pcr_begin != PES_FRAME_TS_INVALID
+            ? TS_SLICE(tso->active_slice->data)->pts_end - TS_SLICE(tso->active_slice->data)->pts_begin
+              - tso->pcr_delta_accumulator / 300 
+            : 0;
+#if 0
+        fprintf(stderr, "active slice: %" G_GINT64_FORMAT " -> %" G_GINT64_FORMAT " delta pts: %"
+                G_GINT64_FORMAT ", delta pcr/300 %" G_GINT64_FORMAT "\n",
                 TS_SLICE(tso->active_slice->data)->pts_begin,
-                TS_SLICE(tso->active_slice->data)->pts_end);
+                TS_SLICE(tso->active_slice->data)->pts_end,
+                TS_SLICE(tso->active_slice->data)->pts_end - TS_SLICE(tso->active_slice->data)->pts_begin,
+                tso->pcr_delta_accumulator / 300);
+#endif
     }
     gboolean write_packet = tso_should_write_packet(pidinfo, packet, tso);
     tso->bytes_read = offset;
@@ -1069,7 +1082,9 @@ static bool tsn_output_handle_packet(PidInfo *pidinfo, const uint8_t *packet, co
         }
     }
 
+#if 0
     tso_update_timestamps_delta(tso, packet);
+#endif
     tso_update_pes_pts(pidinfo, packet, tso);
 
     if (!write_packet)
